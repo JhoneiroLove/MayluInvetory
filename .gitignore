@@ -1,0 +1,53 @@
+# --- Gradle ---
+.gradle/
+build/
+!gradle/wrapper/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# --- IntelliJ IDEA ---
+.idea/
+*.iml
+
+# --- Android/Java ---
+local.properties
+*.log
+*.class
+*.jar
+*.war
+*.ear
+
+# --- Google Services (Android) ---
+google-services.json
+
+# --- System files ---
+.DS_Store
+Thumbs.db
+
+# --- Mac ---
+*.swp
+*.swo
+
+# --- VS Code ---
+.vscode/
+
+# --- Linux ---
+*~
+
+# --- Windows ---
+*.bak
+*.tmp
+
+# --- Other build output ---
+out/
+bin/
+
+# --- Kotlin Script caches ---
+*.kotlin_module
+
+# --- JetBrains Rider ---
+.idea/
+*.sln.iml
+
+# --- Test output ---
+test-output/
