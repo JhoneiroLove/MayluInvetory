@@ -46,8 +46,21 @@ bin/
 *.kotlin_module
 
 # --- JetBrains Rider ---
-.idea/
 *.sln.iml
 
 # --- Test output ---
 test-output/
+
+# Build output
+/app/release/
+/app/build/
+/build/
+/release/
+/*.apk
+*.aab
+*.ap_
+*.dex
+*.so
+*.keystore
+*.jks
+

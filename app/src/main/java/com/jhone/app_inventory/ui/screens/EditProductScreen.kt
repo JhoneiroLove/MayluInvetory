@@ -18,13 +18,12 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.jhone.app_inventory.data.Product
 import com.jhone.app_inventory.ui.viewmodel.ProductViewModel
-import java.text.SimpleDateFormat
-import java.util.*
+import com.jhone.app_inventory.utils.DateUtils
 import com.google.firebase.Timestamp
 
 @Composable
 fun EditProductScreen(
-    userRole: String, // NUEVO
+    userRole: String,
     product: Product,
     onCancel: () -> Unit,
     onProductUpdated: () -> Unit,
@@ -36,6 +35,11 @@ fun EditProductScreen(
     var codigo by remember { mutableStateOf(product.codigo) }
     var descripcion by remember { mutableStateOf(product.descripcion) }
     var cantidadText by remember { mutableStateOf(product.cantidad.toString()) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    // Estados observados del ViewModel
+    val isLoading by viewModel.isLoading.collectAsState()
+
     // Ahora, el precio público se calcula automáticamente, por lo que no lo editamos directamente.
     var precioBoletaText by remember { mutableStateOf(if (isAdmin) product.precioBoleta.toString() else "") }
     var porcentajeText by remember { mutableStateOf(if (isAdmin) product.porcentaje.toString() else "") }
@@ -43,9 +47,7 @@ fun EditProductScreen(
     val originalBoleta = product.precioBoleta
     val originalPorcentaje = product.porcentaje
 
-    val fechaVenc = product.fechaVencimiento?.toDate()?.let {
-        SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(it)
-    } ?: ""
+    val fechaVenc = DateUtils.formatDate(product.fechaVencimiento)
     var fechaVencimientoText by remember { mutableStateOf(fechaVenc) }
 
     val precioBoleta = if (isAdmin) precioBoletaText.toDoubleOrNull() ?: 0.0 else originalBoleta
@@ -94,58 +96,100 @@ fun EditProductScreen(
                     text = "Editar Producto",
                     style = MaterialTheme.typography.headlineSmall.copy(color = primaryColor)
                 )
+
+                // Mostrar mensaje de error si existe
+                errorMessage?.let { error ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFFFEBEE)
+                        )
+                    ) {
+                        Text(
+                            text = error,
+                            color = Color.Red,
+                            modifier = Modifier.padding(8.dp),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+
                 OutlinedTextField(
                     value = proveedor,
-                    onValueChange = { proveedor = it },
+                    onValueChange = {
+                        proveedor = it
+                        errorMessage = null
+                    },
                     label = { Text("Proveedor") },
                     modifier = Modifier.fillMaxWidth(),
                     textStyle = TextStyle(color = Color.Black),
-                    colors = fieldColors
+                    colors = fieldColors,
+                    enabled = !isLoading
                 )
                 OutlinedTextField(
                     value = codigo,
-                    onValueChange = { codigo = it },
+                    onValueChange = {
+                        codigo = it
+                        errorMessage = null
+                    },
                     label = { Text("Código del Producto") },
                     modifier = Modifier.fillMaxWidth(),
                     textStyle = TextStyle(color = Color.Black),
-                    colors = fieldColors
+                    colors = fieldColors,
+                    enabled = !isLoading
                 )
                 OutlinedTextField(
                     value = descripcion,
-                    onValueChange = { descripcion = it },
+                    onValueChange = {
+                        descripcion = it
+                        errorMessage = null
+                    },
                     label = { Text("Descripción") },
                     modifier = Modifier.fillMaxWidth(),
                     textStyle = TextStyle(color = Color.Black),
-                    colors = fieldColors
+                    colors = fieldColors,
+                    enabled = !isLoading
                 )
                 OutlinedTextField(
                     value = cantidadText,
-                    onValueChange = { cantidadText = it },
+                    onValueChange = {
+                        cantidadText = it
+                        errorMessage = null
+                    },
                     label = { Text("Cantidad") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                     textStyle = TextStyle(color = Color.Black),
-                    colors = fieldColors
+                    colors = fieldColors,
+                    enabled = !isLoading
                 )
                 if (isAdmin) {
                     OutlinedTextField(
                         value = precioBoletaText,
-                        onValueChange = { precioBoletaText = it },
+                        onValueChange = {
+                            precioBoletaText = it
+                            errorMessage = null
+                        },
                         label = { Text("Precio Boleta") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth(),
-                        colors = fieldColors
+                        colors = fieldColors,
+                        enabled = !isLoading
                     )
                     OutlinedTextField(
                         value = porcentajeText,
-                        onValueChange = { porcentajeText = it },
+                        onValueChange = {
+                            porcentajeText = it
+                            errorMessage = null
+                        },
                         label = { Text("Porcentaje (%)") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth(),
-                        colors = fieldColors
+                        colors = fieldColors,
+                        enabled = !isLoading
                     )
                 }
-                // NUEVO: Ocultamos Precio Costo y Precio Público para asesores
+                // Ocultamos Precio Costo y Precio Público para asesores
                 if (isAdmin) {
                     OutlinedTextField(
                         value = String.format("%.2f", precioCosto),
@@ -171,12 +215,43 @@ fun EditProductScreen(
                     onValueChange = { fechaVencimientoText = it },
                     label = { Text("Fecha Venc. (dd/MM/yyyy)") },
                     modifier = Modifier.fillMaxWidth(),
-                    colors = fieldColors
+                    colors = fieldColors,
+                    enabled = !isLoading
                 )
                 Button(
                     onClick = {
+                        // Validaciones básicas
+                        when {
+                            proveedor.isBlank() -> {
+                                errorMessage = "El proveedor es obligatorio"
+                                return@Button
+                            }
+                            codigo.isBlank() -> {
+                                errorMessage = "El código es obligatorio"
+                                return@Button
+                            }
+                            descripcion.isBlank() -> {
+                                errorMessage = "La descripción es obligatoria"
+                                return@Button
+                            }
+                            cantidadText.isBlank() || cantidadText.toIntOrNull() == null -> {
+                                errorMessage = "La cantidad debe ser un número válido"
+                                return@Button
+                            }
+                            isAdmin && (precioBoletaText.isBlank() || precioBoletaText.toDoubleOrNull() == null) -> {
+                                errorMessage = "El precio boleta debe ser un número válido"
+                                return@Button
+                            }
+                            isAdmin && (porcentajeText.isBlank() || porcentajeText.toDoubleOrNull() == null) -> {
+                                errorMessage = "El porcentaje debe ser un número válido"
+                                return@Button
+                            }
+                        }
+
+                        errorMessage = null
                         val cantidad = cantidadText.toIntOrNull() ?: 0
-                        val parsedFechaVenc = parseDate(fechaVencimientoText)
+                        val parsedFechaVenc = DateUtils.parseDate(fechaVencimientoText)
+
                         val updatedProduct = Product(
                             id = product.id,
                             codigo = codigo,
@@ -190,18 +265,38 @@ fun EditProductScreen(
                             fechaVencimiento = parsedFechaVenc,
                             porcentaje = porcentajeValue
                         )
-                        viewModel.updateProduct(updatedProduct) {
-                            onProductUpdated()
+
+                        viewModel.updateProduct(updatedProduct) { success, error ->
+                            if (success) {
+                                onProductUpdated()
+                            } else {
+                                errorMessage = error ?: "Error desconocido al actualizar producto"
+                            }
                         }
                     },
+                    enabled = !isLoading,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
                     shape = RoundedCornerShape(16.dp)
                 ) {
-                    Text("Actualizar", color = Color.White)
+                    if (isLoading) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = Color.White
+                            )
+                            Text(text = "Actualizando...", color = Color.White)
+                        }
+                    } else {
+                        Text("Actualizar", color = Color.White)
+                    }
                 }
                 OutlinedButton(
                     onClick = onCancel,
+                    enabled = !isLoading,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = primaryColor)

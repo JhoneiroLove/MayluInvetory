@@ -28,10 +28,13 @@ fun StockMovementScreen(
     onMovementAdded: () -> Unit,
     viewModel: ProductViewModel = hiltViewModel()
 ) {
-    // Colores consistentes con tu app
-    val primaryColor = Color(0xFF9C84C9)   // Mismo color que usas en la pantalla principal
+    // Estados observados del ViewModel
+    val isLoading by viewModel.isLoading.collectAsState()
+
+    val primaryColor = Color(0xFF9C84C9)
     val cardBackgroundColor = Color.White
-    val buttonColor = Color(0xFF7851A9)   // Botón principal
+    val buttonColor = Color(0xFF7851A9)
+
     // Configuración de colores para los campos de texto
     val fieldColors = TextFieldDefaults.colors(
         focusedContainerColor = Color.Transparent,
@@ -47,7 +50,7 @@ fun StockMovementScreen(
     var movementType by remember { mutableStateOf("ingreso") }
     var quantityText by remember { mutableStateOf("") }
     var observation by remember { mutableStateOf("") }
-    var isButtonEnabled by remember { mutableStateOf(true) } // Nuevo estado para habilitar/deshabilitar el botón
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
     Box(
         modifier = Modifier
@@ -89,6 +92,33 @@ fun StockMovementScreen(
                     textAlign = TextAlign.Center
                 )
 
+                // Mostrar stock actual
+                Text(
+                    text = "Stock actual: ${product.cantidad}",
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        color = primaryColor,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    textAlign = TextAlign.Center
+                )
+
+                // Mostrar mensaje de error si existe
+                errorMessage?.let { error ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFFFEBEE)
+                        )
+                    ) {
+                        Text(
+                            text = error,
+                            color = Color.Red,
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+
                 // Selección del tipo de movimiento: Ingreso o Salida
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -98,14 +128,26 @@ fun StockMovementScreen(
                     val unselectedButtonColors = ButtonDefaults.buttonColors(containerColor = Color.LightGray)
 
                     Button(
-                        onClick = { movementType = "ingreso" },
+                        onClick = {
+                            if (!isLoading) {
+                                movementType = "ingreso"
+                                errorMessage = null
+                            }
+                        },
+                        enabled = !isLoading,
                         colors = if (movementType == "ingreso") selectedButtonColors else unselectedButtonColors,
                         shape = RoundedCornerShape(24.dp)
                     ) {
                         Text(text = "Ingreso", color = Color.White)
                     }
                     Button(
-                        onClick = { movementType = "salida" },
+                        onClick = {
+                            if (!isLoading) {
+                                movementType = "salida"
+                                errorMessage = null
+                            }
+                        },
+                        enabled = !isLoading,
                         colors = if (movementType == "salida") selectedButtonColors else unselectedButtonColors,
                         shape = RoundedCornerShape(24.dp)
                     ) {
@@ -116,11 +158,15 @@ fun StockMovementScreen(
                 // Campo: Cantidad
                 OutlinedTextField(
                     value = quantityText,
-                    onValueChange = { quantityText = it },
+                    onValueChange = { newValue ->
+                        quantityText = newValue
+                        errorMessage = null
+                    },
                     label = { Text("Cantidad", color = Color.Black) },
                     modifier = Modifier.fillMaxWidth(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     colors = fieldColors,
+                    enabled = !isLoading,
                     textStyle = LocalTextStyle.current.copy(color = Color.Black)
                 )
 
@@ -131,6 +177,7 @@ fun StockMovementScreen(
                     label = { Text("Observaciones", color = Color.Black) },
                     modifier = Modifier.fillMaxWidth(),
                     colors = fieldColors,
+                    enabled = !isLoading,
                     textStyle = LocalTextStyle.current.copy(color = Color.Black)
                 )
 
@@ -141,6 +188,7 @@ fun StockMovementScreen(
                 ) {
                     OutlinedButton(
                         onClick = onCancel,
+                        enabled = !isLoading,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(24.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = primaryColor)
@@ -149,29 +197,61 @@ fun StockMovementScreen(
                     }
                     Button(
                         onClick = {
-                            if (isButtonEnabled) {
-                                isButtonEnabled = false
-                                val quantity = quantityText.toIntOrNull() ?: 0
-                                val movimiento = Movimiento(
-                                    loteId = product.id,
-                                    tipo = movementType,
-                                    cantidad = quantity,
-                                    fecha = Timestamp.now(),
-                                    usuario = "",
-                                    observacion = observation
-                                )
-                                // Llamada para registrar el movimiento
-                                viewModel.addMovimiento(movimiento) {
+                            // Validaciones
+                            val quantity = quantityText.toIntOrNull()
+                            when {
+                                quantityText.isBlank() || quantity == null -> {
+                                    errorMessage = "La cantidad debe ser un número válido"
+                                    return@Button
+                                }
+                                quantity <= 0 -> {
+                                    errorMessage = "La cantidad debe ser mayor a cero"
+                                    return@Button
+                                }
+                                movementType == "salida" && quantity > product.cantidad -> {
+                                    errorMessage = "No hay suficiente stock. Stock actual: ${product.cantidad}"
+                                    return@Button
+                                }
+                            }
+
+                            errorMessage = null
+                            val movimiento = Movimiento(
+                                loteId = product.id,
+                                tipo = movementType,
+                                cantidad = quantity,
+                                fecha = Timestamp.now(),
+                                usuario = "",
+                                observacion = observation
+                            )
+
+                            // Llamada para registrar el movimiento
+                            viewModel.addMovimiento(movimiento) { success, error ->
+                                if (success) {
                                     onMovementAdded() // Cierra la interfaz
+                                } else {
+                                    errorMessage = error ?: "Error desconocido al procesar el movimiento"
                                 }
                             }
                         },
-                        enabled = isButtonEnabled,
+                        enabled = !isLoading,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(24.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = buttonColor)
                     ) {
-                        Text(text = "Guardar", color = Color.White)
+                        if (isLoading) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    color = Color.White
+                                )
+                                Text(text = "Guardando...", color = Color.White)
+                            }
+                        } else {
+                            Text(text = "Guardar", color = Color.White)
+                        }
                     }
                 }
             }

@@ -19,8 +19,7 @@ import androidx.navigation.NavController
 import com.jhone.app_inventory.data.Movimiento
 import com.jhone.app_inventory.data.Product
 import com.jhone.app_inventory.ui.viewmodel.ProductViewModel
-import java.text.SimpleDateFormat
-import java.util.*
+import com.jhone.app_inventory.utils.DateUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -94,8 +93,7 @@ fun StockHistoryScreen(
 
 @Composable
 fun MovimientoItem(movimiento: Movimiento) {
-    val dateFormat = remember { SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()) }
-    val fechaStr = dateFormat.format(movimiento.fecha.toDate())
+    val fechaStr = DateUtils.formatDateTime(movimiento.fecha)
 
     // Colores de ejemplo
     val cardBackground = Color.White
