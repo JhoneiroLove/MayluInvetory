@@ -4,7 +4,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
@@ -15,16 +17,20 @@ import androidx.compose.material3.*
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.jhone.app_inventory.R
@@ -32,6 +38,7 @@ import com.jhone.app_inventory.data.Product
 import com.jhone.app_inventory.ui.viewmodel.ProductViewModel
 import com.jhone.app_inventory.utils.DateUtils
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,7 +61,13 @@ fun ProductListScreen(
     // Estado para controlar la eliminación
     var isDeleting by remember { mutableStateOf(false) }
 
-    // Filtrado de productos - Simplificado y más estable
+    // Estado del scroll para infinite scroll
+    val listState = rememberLazyListState()
+
+    // Pull to refresh state
+    var isRefreshing by remember { mutableStateOf(false) }
+
+    // Filtrado de productos
     val filteredProducts = remember(products, searchQuery) {
         if (searchQuery.isEmpty()) {
             products.sortedBy { it.proveedor }
@@ -67,11 +80,28 @@ fun ProductListScreen(
         }
     }
 
+    // Scroll infinito - Cargar más cuando llegamos al final
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo }
+            .collect { visibleItems ->
+                val lastVisibleItem = visibleItems.lastOrNull()
+                val totalItems = listState.layoutInfo.totalItemsCount
+
+                // Si estamos en los últimos 3 elementos y no hay búsqueda activa
+                if (lastVisibleItem != null &&
+                    lastVisibleItem.index >= totalItems - 3 &&
+                    !isLoadingMore &&
+                    !isLoading &&
+                    searchQuery.isEmpty() &&
+                    products.isNotEmpty()) {
+                    viewModel.loadNextPage()
+                }
+            }
+    }
+
     // Mostrar errores
     LaunchedEffect(error) {
         if (error != null) {
-            // Aquí podrías mostrar un Snackbar o Toast
-            println("Error: $error")
             delay(5000)
             viewModel.clearError()
         }
@@ -81,7 +111,17 @@ fun ProductListScreen(
         topBar = {
             InventoryNavbar(
                 onAddClick = onAddClick,
-                onSyncClick = { viewModel.refreshData() }, // Cambiado a refreshData()
+                onSyncClick = {
+                    if (!isRefreshing) {
+                        isRefreshing = true
+                        viewModel.refreshData()
+                        // Simular delay para better UX
+                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                            delay(1000)
+                            isRefreshing = false
+                        }
+                    }
+                },
                 onLogoutClick = onLogout
             )
         },
@@ -94,194 +134,229 @@ fun ProductListScreen(
                 .background(Color(0xFFF7F7F7))
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp)
+                modifier = Modifier.fillMaxSize()
             ) {
-                // Buscador
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { newValue ->
-                        searchQuery = newValue
-                    },
-                    label = { Text("Buscar por código, descripción o proveedor") },
-                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.Black),
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    enabled = !isDeleting, // Deshabilitar durante eliminación
-                    colors = TextFieldDefaults.outlinedTextFieldColors(
-                        focusedBorderColor = Color.Black,
-                        unfocusedBorderColor = Color.Gray,
-                        focusedLabelColor = Color.Black,
-                        unfocusedLabelColor = Color.DarkGray,
-                        cursorColor = Color.Black,
-                        disabledBorderColor = Color.LightGray,
-                        disabledLabelColor = Color.LightGray
-                    ),
-                    placeholder = { Text("Ingrese búsqueda...", color = Color.DarkGray) }
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Mostrar contador de productos
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                // Área de búsqueda y contadores
+                Column(
+                    modifier = Modifier.padding(16.dp)
                 ) {
-                    Text(
-                        text = if (searchQuery.isNotBlank()) {
-                            "Encontrados: ${filteredProducts.size} de ${products.size}"
-                        } else {
-                            "Mostrando: ${products.size} productos"
+                    // Buscador
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { newValue ->
+                            searchQuery = newValue
                         },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
+                        label = { Text("Buscar por código, descripción o proveedor") },
+                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.Black),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        enabled = !isDeleting,
+                        colors = TextFieldDefaults.outlinedTextFieldColors(
+                            focusedBorderColor = Color.Black,
+                            unfocusedBorderColor = Color.Gray,
+                            focusedLabelColor = Color.Black,
+                            unfocusedLabelColor = Color.DarkGray,
+                            cursorColor = Color.Black,
+                            disabledBorderColor = Color.LightGray,
+                            disabledLabelColor = Color.LightGray
+                        ),
+                        placeholder = { Text("Ingrese búsqueda...", color = Color.DarkGray) }
                     )
 
-                    if (isLoading) {
-                        Text(
-                            text = "Cargando...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF9C84C9)
-                        )
-                    }
-                }
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Mostrar indicador de carga
-                if (isLoading) {
-                    Box(
+                    // Información de estado y contadores
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.Center
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                color = Color(0xFF9C84C9)
-                            )
-                            Text("Cargando...", color = Color.Gray)
+                        Text(
+                            text = if (searchQuery.isNotBlank()) {
+                                "Encontrados: ${filteredProducts.size} de ${products.size}"
+                            } else {
+                                "Mostrando: ${products.size} productos"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+
+                        // Indicador de estado
+                        when {
+                            isLoading -> {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = Color(0xFF9C84C9)
+                                    )
+                                    Text(
+                                        text = "Cargando...",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFF9C84C9)
+                                    )
+                                }
+                            }
+                            isRefreshing -> {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = Color(0xFF9C84C9)
+                                    )
+                                    Text(
+                                        text = "Actualizando...",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFF9C84C9)
+                                    )
+                                }
+                            }
                         }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
 
-                // Mostrar error si existe
-                error?.let { errorMsg ->
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFFFFEBEE)
-                        )
-                    ) {
-                        Text(
-                            text = "Error: $errorMsg",
-                            color = Color.Red,
-                            modifier = Modifier.padding(16.dp)
-                        )
+                    // Mostrar error si existe
+                    error?.let { errorMsg ->
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color(0xFFFFEBEE)
+                            )
+                        ) {
+                            Text(
+                                text = "Error: $errorMsg",
+                                color = Color.Red,
+                                modifier = Modifier.padding(12.dp),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
                 }
 
                 // Lista de productos
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(
-                        items = filteredProducts,
-                        key = { product -> product.id }
-                    ) { product ->
-                        ProductItem(
-                            product = product,
-                            userRole = userRole,
-                            isDeleting = isDeleting,
-                            onEditClick = { selectedProduct ->
-                                if (!isDeleting) {
-                                    navController.navigate("editProductScreen/${selectedProduct.id}")
-                                }
-                            },
-                            onDeleteClick = { selectedProduct ->
-                                if (!isDeleting) {
-                                    isDeleting = true
-                                    viewModel.deleteProduct(selectedProduct) { success, error ->
-                                        isDeleting = false
-                                        if (!success) {
-                                            println("Error al eliminar: $error")
-                                        }
-                                    }
-                                }
-                            },
-                            onManageStockClick = { selectedProduct ->
-                                if (!isDeleting) {
-                                    navController.navigate("stockMovementScreen/${selectedProduct.id}")
-                                }
-                            },
-                            onHistoryClick = { selectedProduct ->
-                                if (!isDeleting) {
-                                    navController.navigate("stockHistoryScreen/${selectedProduct.id}")
-                                }
-                            }
-                        )
-                    }
-
-                    // Botón para cargar más productos
-                    if (filteredProducts.isNotEmpty() && searchQuery.isEmpty()) { // Solo mostrar si no hay búsqueda activa
-                        item {
-                            Button(
-                                onClick = {
-                                    if (!isLoadingMore) {
-                                        viewModel.loadNextPage()
-                                    }
-                                },
-                                enabled = !isLoadingMore && !isLoading,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7851A9))
+                Box(modifier = Modifier.weight(1f)) {
+                    if (filteredProducts.isEmpty() && !isLoading) {
+                        // Mensaje cuando no hay productos
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                if (isLoadingMore) {
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            color = Color.White
-                                        )
-                                        Text("Cargando más...", color = Color.White)
-                                    }
-                                } else {
-                                    Text("Cargar Más", color = Color.White)
+                                Text(
+                                    text = if (searchQuery.isEmpty()) {
+                                        "No hay productos registrados"
+                                    } else {
+                                        "No se encontraron productos"
+                                    },
+                                    color = Color.Gray,
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                                if (searchQuery.isEmpty()) {
+                                    Text(
+                                        text = "Toca el botón de sincronizar para actualizar",
+                                        color = Color.LightGray,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
                                 }
                             }
                         }
-                    }
-                }
+                    } else {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(
+                                items = filteredProducts,
+                                key = { product -> product.id }
+                            ) { product ->
+                                ProductItem(
+                                    product = product,
+                                    userRole = userRole,
+                                    isDeleting = isDeleting,
+                                    onEditClick = { selectedProduct ->
+                                        if (!isDeleting) {
+                                            navController.navigate("editProductScreen/${selectedProduct.id}")
+                                        }
+                                    },
+                                    onDeleteClick = { selectedProduct ->
+                                        if (!isDeleting) {
+                                            isDeleting = true
+                                            viewModel.deleteProduct(selectedProduct) { success, error ->
+                                                isDeleting = false
+                                                if (!success) {
+                                                    println("Error al eliminar: $error")
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onManageStockClick = { selectedProduct ->
+                                        if (!isDeleting) {
+                                            navController.navigate("stockMovementScreen/${selectedProduct.id}")
+                                        }
+                                    },
+                                    onHistoryClick = { selectedProduct ->
+                                        if (!isDeleting) {
+                                            navController.navigate("stockHistoryScreen/${selectedProduct.id}")
+                                        }
+                                    }
+                                )
+                            }
 
-                // Mensaje cuando no hay productos
-                if (filteredProducts.isEmpty() && !isLoading) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = if (searchQuery.isEmpty()) {
-                                "No hay productos registrados"
-                            } else {
-                                "No se encontraron productos que coincidan con '$searchQuery'"
-                            },
-                            color = Color.Gray,
-                            style = MaterialTheme.typography.bodyLarge
-                        )
+                            // Indicador de carga al final (solo cuando no hay búsqueda)
+                            if (isLoadingMore && searchQuery.isEmpty()) {
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(16.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(20.dp),
+                                                color = Color(0xFF9C84C9)
+                                            )
+                                            Text(
+                                                text = "Cargando más productos...",
+                                                color = Color.Gray,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Indicador de final de lista
+                            if (products.isNotEmpty() && !isLoadingMore && searchQuery.isEmpty()) {
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 16.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "• • •",
+                                            color = Color.LightGray,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            letterSpacing = 4.sp // Corregido: usando .sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -289,6 +364,7 @@ fun ProductListScreen(
     }
 }
 
+// Resto de componentes sin cambios...
 @Composable
 fun InventoryFooterWithImage() {
     Box(
@@ -363,9 +439,7 @@ fun ProductItem(
 
     Card(
         shape = RoundedCornerShape(12.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
         colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
