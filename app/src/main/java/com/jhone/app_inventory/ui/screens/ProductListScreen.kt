@@ -45,6 +45,7 @@ fun ProductListScreen(
     // Estados del ViewModel
     val products by viewModel.products.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val isLoadingMore by viewModel.isLoadingMore.collectAsState()
     val error by viewModel.error.collectAsState()
 
     // Estado para el buscador
@@ -80,7 +81,7 @@ fun ProductListScreen(
         topBar = {
             InventoryNavbar(
                 onAddClick = onAddClick,
-                onSyncClick = { viewModel.syncData() },
+                onSyncClick = { viewModel.refreshData() }, // Cambiado a refreshData()
                 onLogoutClick = onLogout
             )
         },
@@ -119,6 +120,33 @@ fun ProductListScreen(
                     ),
                     placeholder = { Text("Ingrese búsqueda...", color = Color.DarkGray) }
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Mostrar contador de productos
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (searchQuery.isNotBlank()) {
+                            "Encontrados: ${filteredProducts.size} de ${products.size}"
+                        } else {
+                            "Mostrando: ${products.size} productos"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+
+                    if (isLoading) {
+                        Text(
+                            text = "Cargando...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF9C84C9)
+                        )
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
@@ -204,25 +232,31 @@ fun ProductListScreen(
                     }
 
                     // Botón para cargar más productos
-                    if (filteredProducts.isNotEmpty()) {
+                    if (filteredProducts.isNotEmpty() && searchQuery.isEmpty()) { // Solo mostrar si no hay búsqueda activa
                         item {
                             Button(
                                 onClick = {
-                                    if (!isLoading) {
+                                    if (!isLoadingMore) {
                                         viewModel.loadNextPage()
                                     }
                                 },
-                                enabled = !isLoading && !isDeleting,
+                                enabled = !isLoadingMore && !isLoading,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 8.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7851A9))
                             ) {
-                                if (isLoading) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        color = Color.White
-                                    )
+                                if (isLoadingMore) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            color = Color.White
+                                        )
+                                        Text("Cargando más...", color = Color.White)
+                                    }
                                 } else {
                                     Text("Cargar Más", color = Color.White)
                                 }

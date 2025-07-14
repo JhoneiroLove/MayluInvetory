@@ -33,70 +33,214 @@ class ProductViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading
 
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
+    // Configuración de paginación
     private val pageSize = 20L
     private var lastVisibleDoc: DocumentSnapshot? = null
     private var allProductsLoaded = false
+    private var isFirstLoad = true
 
     // Listener para productos
     private var productsListener: ListenerRegistration? = null
     private var movimientosListener: ListenerRegistration? = null
 
     init {
-        setupProductsListener()
+        loadFirstPage()
     }
 
-    private fun setupProductsListener() {
-        try {
-            productsListener?.remove() // Remover listener anterior si existe
+    /**
+     * Carga la primera página de productos con listener
+     */
+    private fun loadFirstPage() {
+        viewModelScope.launch {
+            try {
+                _isLoading.value = true
+                _error.value = null
 
-            productsListener = db.collection("products")
-                .orderBy("codigo")
-                .addSnapshotListener { snapshot, e ->
-                    if (e != null) {
-                        Log.e("ProductViewModel", "Error al escuchar cambios", e)
-                        _error.value = "Error al cargar productos: ${e.message}"
-                        return@addSnapshotListener
+                // Resetear estado de paginación
+                lastVisibleDoc = null
+                allProductsLoaded = false
+                isFirstLoad = true
+
+                Log.d("ProductViewModel", "Cargando primera página...")
+
+                // Cargar primera página sin listener
+                val firstPageQuery = db.collection("products")
+                    .orderBy("codigo")
+                    .limit(pageSize)
+
+                val snapshot = firstPageQuery.get().await()
+
+                if (snapshot.documents.isNotEmpty()) {
+                    lastVisibleDoc = snapshot.documents.last()
+
+                    val initialProducts = snapshot.documents.mapNotNull { doc ->
+                        parseProductFromDocument(doc)
                     }
 
-                    try {
-                        if (snapshot != null) {
-                            val productsList = snapshot.documents.mapNotNull { doc ->
-                                try {
-                                    Product(
-                                        id = doc.id,
-                                        codigo = doc.getString("codigo") ?: "",
-                                        descripcion = doc.getString("descripcion") ?: "",
-                                        cantidad = doc.getLong("cantidad")?.toInt() ?: 0,
-                                        precioBoleta = doc.getDouble("precioBoleta") ?: 0.0,
-                                        precioCosto = doc.getDouble("precioCosto") ?: 0.0,
-                                        precioProducto = doc.getDouble("precioProducto") ?: 0.0,
-                                        proveedor = doc.getString("proveedor") ?: "",
-                                        createdAt = doc.getTimestamp("timestamp"),
-                                        fechaVencimiento = doc.getTimestamp("fechaVencimiento"),
-                                        porcentaje = doc.getDouble("porcentaje") ?: 0.0
-                                    )
-                                } catch (e: Exception) {
-                                    Log.e("ProductViewModel", "Error al parsear producto ${doc.id}", e)
-                                    null
+                    _products.value = initialProducts
+                    Log.d("ProductViewModel", "Primera página cargada: ${initialProducts.size} productos")
+
+                    // Después de cargar la primera página, setup listener para cambios en tiempo real
+                    setupRealtimeListener()
+                } else {
+                    _products.value = emptyList()
+                    allProductsLoaded = true
+                }
+
+            } catch (e: Exception) {
+                Log.e("ProductViewModel", "Error cargando primera página", e)
+                _error.value = "Error cargando productos: ${e.message}"
+            } finally {
+                _isLoading.value = false
+                isFirstLoad = false
+            }
+        }
+    }
+
+    /**
+     * Setup listener solo para cambios en tiempo real de productos ya cargados
+     */
+    private fun setupRealtimeListener() {
+        try {
+            productsListener?.remove()
+
+            // Solo escuchar cambios en productos que ya tenemos cargados
+            val productIds = _products.value.map { it.id }
+
+            if (productIds.isNotEmpty()) {
+                // Escuchar cambios solo en los productos actuales
+                productsListener = db.collection("products")
+                    .whereIn("__name__", productIds.take(10)) // Firestore limit para whereIn
+                    .addSnapshotListener { snapshot, e ->
+                        if (e != null) {
+                            Log.e("ProductViewModel", "Error en listener de cambios", e)
+                            return@addSnapshotListener
+                        }
+
+                        // Actualizar solo productos modificados
+                        snapshot?.documentChanges?.forEach { change ->
+                            when (change.type) {
+                                com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                    updateProductInList(change.document)
+                                }
+                                com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                    removeProductFromList(change.document.id)
+                                }
+                                else -> {
                                 }
                             }
-                            _products.value = productsList
-                            _error.value = null
-                            Log.d("ProductViewModel", "Productos actualizados: ${productsList.size}")
-                        } else {
-                            _products.value = emptyList()
                         }
-                    } catch (e: Exception) {
-                        Log.e("ProductViewModel", "Error al procesar productos", e)
-                        _error.value = "Error al procesar productos"
                     }
-                }
+            }
         } catch (e: Exception) {
-            Log.e("ProductViewModel", "Error al configurar listener", e)
-            _error.value = "Error al configurar la escucha de productos"
+            Log.e("ProductViewModel", "Error configurando listener", e)
+        }
+    }
+
+    private fun updateProductInList(document: DocumentSnapshot) {
+        val updatedProduct = parseProductFromDocument(document) ?: return
+        val currentList = _products.value.toMutableList()
+        val index = currentList.indexOfFirst { it.id == updatedProduct.id }
+
+        if (index != -1) {
+            currentList[index] = updatedProduct
+            _products.value = currentList
+            Log.d("ProductViewModel", "Producto actualizado: ${updatedProduct.codigo}")
+        }
+    }
+
+    private fun removeProductFromList(productId: String) {
+        val currentList = _products.value.toMutableList()
+        val removed = currentList.removeAll { it.id == productId }
+        if (removed) {
+            _products.value = currentList
+            Log.d("ProductViewModel", "Producto eliminado de la lista: $productId")
+        }
+    }
+
+    private fun parseProductFromDocument(doc: DocumentSnapshot): Product? {
+        return try {
+            Product(
+                id = doc.id,
+                codigo = doc.getString("codigo") ?: "",
+                descripcion = doc.getString("descripcion") ?: "",
+                cantidad = doc.getLong("cantidad")?.toInt() ?: 0,
+                precioBoleta = doc.getDouble("precioBoleta") ?: 0.0,
+                precioCosto = doc.getDouble("precioCosto") ?: 0.0,
+                precioProducto = doc.getDouble("precioProducto") ?: 0.0,
+                proveedor = doc.getString("proveedor") ?: "",
+                createdAt = doc.getTimestamp("timestamp"),
+                fechaVencimiento = doc.getTimestamp("fechaVencimiento"),
+                porcentaje = doc.getDouble("porcentaje") ?: 0.0
+            )
+        } catch (e: Exception) {
+            Log.e("ProductViewModel", "Error parseando producto ${doc.id}", e)
+            null
+        }
+    }
+
+    /**
+     * Cargar siguiente página de productos
+     */
+    fun loadNextPage() {
+        if (allProductsLoaded || _isLoadingMore.value) {
+            Log.d("ProductViewModel", "No se puede cargar más: allLoaded=$allProductsLoaded, isLoading=${_isLoadingMore.value}")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                _isLoadingMore.value = true
+                Log.d("ProductViewModel", "Cargando siguiente página...")
+
+                var query = db.collection("products")
+                    .orderBy("codigo")
+                    .limit(pageSize)
+
+                if (lastVisibleDoc != null) {
+                    query = query.startAfter(lastVisibleDoc!!)
+                }
+
+                val snapshot = query.get().await()
+
+                if (snapshot.isEmpty) {
+                    allProductsLoaded = true
+                    Log.d("ProductViewModel", "No hay más productos para cargar")
+                    return@launch
+                }
+
+                lastVisibleDoc = snapshot.documents.last()
+                val newProducts = snapshot.documents.mapNotNull { doc ->
+                    parseProductFromDocument(doc)
+                }
+
+                // Agregar nuevos productos evitando duplicados
+                val currentList = _products.value.toMutableList()
+                val uniqueNewProducts = newProducts.filter { newProduct ->
+                    currentList.none { it.id == newProduct.id }
+                }
+
+                _products.value = currentList + uniqueNewProducts
+                Log.d("ProductViewModel", "Página cargada: ${uniqueNewProducts.size} productos nuevos")
+
+                // Si cargamos menos productos que el pageSize, probablemente no hay más
+                if (snapshot.documents.size < pageSize) {
+                    allProductsLoaded = true
+                    Log.d("ProductViewModel", "Última página cargada")
+                }
+
+            } catch (e: Exception) {
+                Log.e("ProductViewModel", "Error cargando siguiente página", e)
+                _error.value = "Error cargando más productos: ${e.message}"
+            } finally {
+                _isLoadingMore.value = false
+            }
         }
     }
 
@@ -119,8 +263,15 @@ class ProductViewModel @Inject constructor(
                     "porcentaje" to product.porcentaje
                 )
 
-                db.collection("products").add(productMap).await()
-                Log.d("ProductViewModel", "Producto añadido exitosamente")
+                val docRef = db.collection("products").add(productMap).await()
+
+                // Agregar el nuevo producto al inicio de la lista local
+                val newProduct = product.copy(id = docRef.id)
+                val currentList = _products.value.toMutableList()
+                currentList.add(0, newProduct)
+                _products.value = currentList
+
+                Log.d("ProductViewModel", "Producto añadido exitosamente: ${docRef.id}")
                 onComplete(true, null)
 
             } catch (e: Exception) {
@@ -154,6 +305,9 @@ class ProductViewModel @Inject constructor(
                     .document(product.id)
                     .update(productMap)
                     .await()
+
+                // Actualizar en la lista local
+                updateProductInList(db.collection("products").document(product.id).get().await())
 
                 Log.d("ProductViewModel", "Producto actualizado: ${product.id}")
                 onComplete(true, null)
@@ -189,6 +343,9 @@ class ProductViewModel @Inject constructor(
                     batch.delete(doc.reference)
                 }
                 batch.commit().await()
+
+                // Remover de la lista local
+                removeProductFromList(product.id)
 
                 Log.d("ProductViewModel", "Producto y movimientos eliminados: ${product.id}")
                 onComplete(true, null)
@@ -253,11 +410,12 @@ class ProductViewModel @Inject constructor(
 
     fun listenToMovimientosForProduct(productId: String) {
         try {
-            movimientosListener?.remove() // Remover listener anterior
+            movimientosListener?.remove()
 
             movimientosListener = db.collection("movimientos")
                 .whereEqualTo("loteId", productId)
                 .orderBy("fecha", Query.Direction.DESCENDING)
+                .limit(50) // Limitar a 50 movimientos más recientes
                 .addSnapshotListener { snapshot, e ->
                     if (e != null) {
                         Log.e("ProductViewModel", "Error al escuchar movimientos", e)
@@ -295,65 +453,53 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    fun loadNextPage() {
-        if (allProductsLoaded || _isLoading.value) return
+    /**
+     * Función para refrescar completamente los datos
+     */
+    fun refreshData() {
+        productsListener?.remove()
+        _products.value = emptyList()
+        loadFirstPage()
+    }
+
+    /**
+     * Función para sincronizar (alias de refresh)
+     */
+    fun syncData() {
+        refreshData()
+    }
+
+    // Función para buscar productos específicos
+    fun searchProducts(query: String, onComplete: (List<Product>) -> Unit) {
+        if (query.isBlank()) {
+            onComplete(emptyList())
+            return
+        }
 
         viewModelScope.launch {
             try {
-                _isLoading.value = true
+                val cleanQuery = query.trim().lowercase()
 
-                var query = db.collection("products")
+                // Buscar por código (más eficiente con índice)
+                val codeResults = db.collection("products")
                     .orderBy("codigo")
-                    .limit(10)
+                    .startAt(cleanQuery)
+                    .endAt(cleanQuery + "\uf8ff")
+                    .limit(20)
+                    .get()
+                    .await()
 
-                if (lastVisibleDoc != null) {
-                    query = query.startAfter(lastVisibleDoc!!)
+                val searchResults = codeResults.documents.mapNotNull { doc ->
+                    parseProductFromDocument(doc)
                 }
 
-                val snapshot = query.get().await()
-
-                if (snapshot.isEmpty) {
-                    allProductsLoaded = true
-                    return@launch
-                }
-
-                lastVisibleDoc = snapshot.documents.last()
-                val newProducts = snapshot.documents.mapNotNull { doc ->
-                    try {
-                        Product(
-                            id = doc.id,
-                            codigo = doc.getString("codigo") ?: "",
-                            descripcion = doc.getString("descripcion") ?: "",
-                            cantidad = doc.getLong("cantidad")?.toInt() ?: 0,
-                            precioBoleta = doc.getDouble("precioBoleta") ?: 0.0,
-                            precioCosto = doc.getDouble("precioCosto") ?: 0.0,
-                            precioProducto = doc.getDouble("precioProducto") ?: 0.0,
-                            proveedor = doc.getString("proveedor") ?: "",
-                            createdAt = doc.getTimestamp("timestamp"),
-                            fechaVencimiento = doc.getTimestamp("fechaVencimiento"),
-                            porcentaje = doc.getDouble("porcentaje") ?: 0.0
-                        )
-                    } catch (e: Exception) {
-                        Log.e("ProductViewModel", "Error al parsear producto en paginación", e)
-                        null
-                    }
-                }
-
-                val currentList = _products.value.toMutableList()
-                val updatedList = (currentList + newProducts).distinctBy { it.id }
-                _products.value = updatedList
+                onComplete(searchResults)
 
             } catch (e: Exception) {
-                Log.e("ProductViewModel", "Error al cargar la siguiente página", e)
-            } finally {
-                _isLoading.value = false
+                Log.e("ProductViewModel", "Error en búsqueda", e)
+                onComplete(emptyList())
             }
         }
-    }
-
-    // Función para refrescar manualmente
-    fun syncData() {
-        setupProductsListener() // Reinicia el listener
     }
 
     // Limpiar recursos
