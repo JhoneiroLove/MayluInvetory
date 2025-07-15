@@ -82,6 +82,10 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    fun getCurrentUserEmail(): String? {
+        return auth.currentUser?.email
+    }
+
     fun signOut() {
         auth.signOut()
         userRole = null // Reiniciamos el rol al cerrar sesión

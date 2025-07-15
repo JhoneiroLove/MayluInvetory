@@ -13,7 +13,8 @@ data class Product(
     val proveedor: String = "",      // Proveedor del producto
     val createdAt: Timestamp? = null, // Fecha de creación del registro
     val fechaVencimiento: Timestamp? = null, // Fecha de vencimiento del producto
-    val porcentaje: Double = 0.0     // Porcentaje para preoio producto
+    val porcentaje: Double = 0.0,     // Porcentaje para precio producto
+    val createdBy: String = ""        // Email del usuario que creó el producto
 ) {
-    constructor() : this("", "", "", 0, 0.0, 0.0, 0.0, "", null, null, 0.0)
+    constructor() : this("", "", "", 0, 0.0, 0.0, 0.0, "", null, null, 0.0, "")
 }

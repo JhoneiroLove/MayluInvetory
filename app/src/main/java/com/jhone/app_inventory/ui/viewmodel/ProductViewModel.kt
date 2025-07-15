@@ -181,7 +181,8 @@ class ProductViewModel @Inject constructor(
                 proveedor = doc.getString("proveedor") ?: "",
                 createdAt = doc.getTimestamp("timestamp"),
                 fechaVencimiento = doc.getTimestamp("fechaVencimiento"),
-                porcentaje = doc.getDouble("porcentaje") ?: 0.0
+                porcentaje = doc.getDouble("porcentaje") ?: 0.0,
+                createdBy = doc.getString("createdBy") ?: "" // Leer usuario creador
             )
         } catch (e: Exception) {
             Log.e("ProductViewModel", "Error parseando producto ${doc.id}", e)
@@ -198,6 +199,8 @@ class ProductViewModel @Inject constructor(
             try {
                 _isLoading.value = true
 
+                val currentUserEmail = auth.currentUser?.email ?: "Usuario Desconocido"
+
                 val productMap = mapOf(
                     "codigo" to product.codigo,
                     "descripcion" to product.descripcion,
@@ -208,13 +211,17 @@ class ProductViewModel @Inject constructor(
                     "proveedor" to product.proveedor,
                     "timestamp" to FieldValue.serverTimestamp(),
                     "fechaVencimiento" to product.fechaVencimiento,
-                    "porcentaje" to product.porcentaje
+                    "porcentaje" to product.porcentaje,
+                    "createdBy" to currentUserEmail // Guardar quién creó el producto
                 )
 
                 val docRef = db.collection("products").add(productMap).await()
 
                 // Agregar a la lista local en el lugar correcto por orden
-                val newProduct = product.copy(id = docRef.id)
+                val newProduct = product.copy(
+                    id = docRef.id,
+                    createdBy = currentUserEmail // Asegurar que el objeto local tenga el creador
+                )
                 if (!loadedProductIds.contains(newProduct.id)) {
                     loadedProductIds.add(newProduct.id)
                     val currentList = _products.value.toMutableList()
@@ -484,6 +491,79 @@ class ProductViewModel @Inject constructor(
      */
     fun syncData() {
         refreshData()
+    }
+
+    // Función para buscar productos específicos en el servidor
+    fun searchProductsInServer(query: String, onComplete: (List<Product>) -> Unit) {
+        if (query.isBlank()) {
+            onComplete(emptyList())
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val cleanQuery = query.trim()
+                val searchResults = mutableListOf<Product>()
+
+                Log.d("ProductViewModel", "Buscando '$cleanQuery' en servidor...")
+
+                // Búsqueda por código
+                val codeQuery = db.collection("products")
+                    .orderBy("codigo")
+                    .startAt(cleanQuery.uppercase())
+                    .endAt(cleanQuery.uppercase() + "\uf8ff")
+                    .limit(10)
+
+                val codeResults = codeQuery.get().await()
+                searchResults.addAll(
+                    codeResults.documents.mapNotNull { parseProductFromDocument(it) }
+                )
+
+                // Búsqueda por descripción (si no encontró suficientes por código)
+                if (searchResults.size < 5) {
+                    val descQuery = db.collection("products")
+                        .orderBy("descripcion")
+                        .startAt(cleanQuery.uppercase())
+                        .endAt(cleanQuery.uppercase() + "\uf8ff")
+                        .limit(10)
+
+                    val descResults = descQuery.get().await()
+                    val descProducts = descResults.documents.mapNotNull { parseProductFromDocument(it) }
+
+                    // Agregar solo productos que no están ya en los resultados
+                    descProducts.forEach { product ->
+                        if (searchResults.none { it.id == product.id }) {
+                            searchResults.add(product)
+                        }
+                    }
+                }
+
+                // Búsqueda por proveedor (si aún no encontró suficientes)
+                if (searchResults.size < 5) {
+                    val provQuery = db.collection("products")
+                        .orderBy("proveedor")
+                        .startAt(cleanQuery.uppercase())
+                        .endAt(cleanQuery.uppercase() + "\uf8ff")
+                        .limit(10)
+
+                    val provResults = provQuery.get().await()
+                    val provProducts = provResults.documents.mapNotNull { parseProductFromDocument(it) }
+
+                    provProducts.forEach { product ->
+                        if (searchResults.none { it.id == product.id }) {
+                            searchResults.add(product)
+                        }
+                    }
+                }
+
+                Log.d("ProductViewModel", "Búsqueda en servidor completada: ${searchResults.size} resultados")
+                onComplete(searchResults.take(20)) // Limitar a 20 resultados
+
+            } catch (e: Exception) {
+                Log.e("ProductViewModel", "Error en búsqueda en servidor", e)
+                onComplete(emptyList())
+            }
+        }
     }
 
     // Limpiar recursos

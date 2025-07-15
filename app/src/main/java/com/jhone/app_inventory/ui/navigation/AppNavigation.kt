@@ -70,7 +70,8 @@ fun AppNavigation() {
                 onAddClick = {
                     navController.navigate("addProduct")
                 },
-                userRole = authViewModel.userRole ?: "asesor" // O donde guardes el rol
+                userRole = authViewModel.userRole ?: "asesor",
+                currentUserEmail = authViewModel.getCurrentUserEmail() // Pasar email actual
             )
         }
         composable("addProduct") {

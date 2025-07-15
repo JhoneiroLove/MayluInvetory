@@ -37,6 +37,7 @@ import com.jhone.app_inventory.R
 import com.jhone.app_inventory.data.Product
 import com.jhone.app_inventory.ui.viewmodel.ProductViewModel
 import com.jhone.app_inventory.utils.DateUtils
+import com.jhone.app_inventory.utils.UserUtils
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -47,6 +48,7 @@ fun ProductListScreen(
     onLogout: () -> Unit,
     onAddClick: () -> Unit,
     userRole: String,
+    currentUserEmail: String? = null, // Email del usuario actual
     viewModel: ProductViewModel = hiltViewModel()
 ) {
     // Estados del ViewModel
@@ -57,6 +59,8 @@ fun ProductListScreen(
 
     // Estado para el buscador
     var searchQuery by rememberSaveable { mutableStateOf("") }
+    var serverSearchResults by remember { mutableStateOf<List<Product>>(emptyList()) }
+    var isSearchingServer by remember { mutableStateOf(false) }
 
     // Estado para controlar la eliminación
     var isDeleting by remember { mutableStateOf(false) }
@@ -67,26 +71,72 @@ fun ProductListScreen(
     // Pull to refresh state
     var isRefreshing by remember { mutableStateOf(false) }
 
-    // Filtrado de productos
-    val filteredProducts = remember(products, searchQuery) {
+    // Filtrado de productos - Híbrido (local + servidor)
+    val filteredProducts = remember(products, searchQuery, serverSearchResults) {
         if (searchQuery.isEmpty()) {
             products.sortedBy { it.proveedor }
         } else {
-            products.filter { product ->
+            // Primero buscar en productos locales
+            val localResults = products.filter { product ->
                 product.codigo.contains(searchQuery, ignoreCase = true) ||
                         product.descripcion.contains(searchQuery, ignoreCase = true) ||
                         product.proveedor.contains(searchQuery, ignoreCase = true)
-            }.sortedBy { it.proveedor }
+            }
+
+            // Si hay resultados del servidor, combinar sin duplicar
+            if (serverSearchResults.isNotEmpty()) {
+                val combinedResults = mutableListOf<Product>()
+                combinedResults.addAll(localResults)
+
+                // Agregar resultados del servidor que no estén en locales
+                serverSearchResults.forEach { serverProduct ->
+                    if (combinedResults.none { it.id == serverProduct.id }) {
+                        combinedResults.add(serverProduct)
+                    }
+                }
+                combinedResults.sortedBy { it.codigo }
+            } else {
+                localResults.sortedBy { it.codigo }
+            }
         }
     }
 
-    // Scroll infinito
+    // Búsqueda en servidor cuando no hay resultados locales
+    LaunchedEffect(searchQuery) {
+        if (searchQuery.length >= 2) {
+            // Primero verificar si hay resultados locales
+            val localResults = products.filter { product ->
+                product.codigo.contains(searchQuery, ignoreCase = true) ||
+                        product.descripcion.contains(searchQuery, ignoreCase = true) ||
+                        product.proveedor.contains(searchQuery, ignoreCase = true)
+            }
+
+            // Si no hay resultados locales, buscar en servidor
+            if (localResults.isEmpty()) {
+                isSearchingServer = true
+                delay(300) // Debounce
+                viewModel.searchProductsInServer(searchQuery) { results ->
+                    serverSearchResults = results
+                    isSearchingServer = false
+                }
+            } else {
+                serverSearchResults = emptyList() // Limpiar resultados del servidor
+                isSearchingServer = false
+            }
+        } else {
+            serverSearchResults = emptyList()
+            isSearchingServer = false
+        }
+    }
+
+    // Scroll infinito - Cargar más cuando llegamos al final
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo }
             .collect { visibleItems ->
                 val lastVisibleItem = visibleItems.lastOrNull()
                 val totalItems = listState.layoutInfo.totalItemsCount
 
+                // Si estamos en los últimos 3 elementos y no hay búsqueda activa
                 if (lastVisibleItem != null &&
                     lastVisibleItem.index >= totalItems - 3 &&
                     !isLoadingMore &&
@@ -145,6 +195,10 @@ fun ProductListScreen(
                         value = searchQuery,
                         onValueChange = { newValue ->
                             searchQuery = newValue
+                            // Limpiar resultados del servidor cuando se cambia la búsqueda
+                            if (newValue.length < 2) {
+                                serverSearchResults = emptyList()
+                            }
                         },
                         label = { Text("Buscar por código, descripción o proveedor") },
                         textStyle = androidx.compose.ui.text.TextStyle(color = Color.Black),
@@ -160,7 +214,15 @@ fun ProductListScreen(
                             disabledBorderColor = Color.LightGray,
                             disabledLabelColor = Color.LightGray
                         ),
-                        placeholder = { Text("Ingrese búsqueda...", color = Color.DarkGray) }
+                        placeholder = { Text("Ingrese búsqueda...", color = Color.DarkGray) },
+                        trailingIcon = {
+                            if (isSearchingServer) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = Color(0xFF9C84C9)
+                                )
+                            }
+                        }
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -173,7 +235,17 @@ fun ProductListScreen(
                     ) {
                         Text(
                             text = if (searchQuery.isNotBlank()) {
-                                "Encontrados: ${filteredProducts.size} de ${products.size}"
+                                val localCount = products.count { product ->
+                                    product.codigo.contains(searchQuery, ignoreCase = true) ||
+                                            product.descripcion.contains(searchQuery, ignoreCase = true) ||
+                                            product.proveedor.contains(searchQuery, ignoreCase = true)
+                                }
+                                val serverCount = serverSearchResults.size
+                                if (serverCount > 0) {
+                                    "Encontrados: ${filteredProducts.size} (${localCount} locales + ${serverCount} servidor)"
+                                } else {
+                                    "Encontrados: ${filteredProducts.size} de ${products.size}"
+                                }
                             } else {
                                 "Mostrando: ${products.size} productos"
                             },
@@ -196,6 +268,22 @@ fun ProductListScreen(
                                         text = "Cargando...",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color(0xFF9C84C9)
+                                    )
+                                }
+                            }
+                            isSearchingServer -> {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = Color(0xFF2196F3)
+                                    )
+                                    Text(
+                                        text = "Buscando...",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFF2196F3)
                                     )
                                 }
                             }
@@ -282,6 +370,7 @@ fun ProductListScreen(
                                     product = product,
                                     userRole = userRole,
                                     isDeleting = isDeleting,
+                                    currentUserEmail = currentUserEmail, // Pasar email actual
                                     onEditClick = { selectedProduct ->
                                         if (!isDeleting) {
                                             navController.navigate("editProductScreen/${selectedProduct.id}")
@@ -385,6 +474,7 @@ fun ProductItem(
     product: Product,
     userRole: String,
     isDeleting: Boolean,
+    currentUserEmail: String?, // Email del usuario actual
     onEditClick: (Product) -> Unit,
     onDeleteClick: (Product) -> Unit,
     onManageStockClick: (Product) -> Unit,
@@ -588,6 +678,40 @@ fun ProductItem(
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.Gray
                 )
+
+                if (isAdmin && product.createdBy.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    val displayName = UserUtils.getDisplayName(product.createdBy, currentUserEmail)
+                    val badgeColor = UserUtils.getUserBadgeColor(product.createdBy, currentUserEmail)
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Creado por:",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+
+                        // Badge del usuario
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = badgeColor),
+                            modifier = Modifier.padding(0.dp)
+                        ) {
+                            Text(
+                                text = displayName,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
     }
