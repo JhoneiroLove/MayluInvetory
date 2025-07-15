@@ -80,14 +80,13 @@ fun ProductListScreen(
         }
     }
 
-    // Scroll infinito - Cargar más cuando llegamos al final
+    // Scroll infinito
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo }
             .collect { visibleItems ->
                 val lastVisibleItem = visibleItems.lastOrNull()
                 val totalItems = listState.layoutInfo.totalItemsCount
 
-                // Si estamos en los últimos 3 elementos y no hay búsqueda activa
                 if (lastVisibleItem != null &&
                     lastVisibleItem.index >= totalItems - 3 &&
                     !isLoadingMore &&
@@ -122,7 +121,8 @@ fun ProductListScreen(
                         }
                     }
                 },
-                onLogoutClick = onLogout
+                onLogoutClick = onLogout,
+                userRole = userRole // Pasar el rol al navbar
             )
         },
         bottomBar = { InventoryFooterWithImage() }
@@ -311,7 +311,7 @@ fun ProductListScreen(
                                 )
                             }
 
-                            // Indicador de carga al final (solo cuando no hay búsqueda)
+                            // Indicador de carga al final
                             if (isLoadingMore && searchQuery.isEmpty()) {
                                 item {
                                     Box(
@@ -351,7 +351,7 @@ fun ProductListScreen(
                                             text = "• • •",
                                             color = Color.LightGray,
                                             style = MaterialTheme.typography.bodyMedium,
-                                            letterSpacing = 4.sp // Corregido: usando .sp
+                                            letterSpacing = 4.sp // usando .sp
                                         )
                                     }
                                 }
@@ -364,7 +364,6 @@ fun ProductListScreen(
     }
 }
 
-// Resto de componentes sin cambios...
 @Composable
 fun InventoryFooterWithImage() {
     Box(
@@ -432,8 +431,10 @@ fun ProductItem(
         )
     }
 
-    val canDelete = (userRole == "admin")
-    val canSeeHistory = (userRole == "admin")
+    val isAdmin = (userRole == "admin")
+    val canEdit = isAdmin      // Solo admin puede editar
+    val canDelete = isAdmin
+    val canSeeHistory = isAdmin
 
     val gradientColors = listOf(Color(0xFF9C84C9), Color(0xFFB89EDC))
 
@@ -461,16 +462,21 @@ fun ProductItem(
                         color = Color.White
                     )
                     Row {
-                        IconButton(
-                            onClick = { onEditClick(product) },
-                            enabled = !isDeleting
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Edit,
-                                contentDescription = "Editar producto",
-                                tint = if (isDeleting) Color.Gray else Color.White
-                            )
+                        // BOTÓN EDITAR - Solo admin
+                        if (canEdit) {
+                            IconButton(
+                                onClick = { onEditClick(product) },
+                                enabled = !isDeleting
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = "Editar producto",
+                                    tint = if (isDeleting) Color.Gray else Color.White
+                                )
+                            }
                         }
+
+                        // GESTIONAR STOCK - Todos pueden
                         IconButton(
                             onClick = { onManageStockClick(product) },
                             enabled = !isDeleting
@@ -481,6 +487,8 @@ fun ProductItem(
                                 tint = if (isDeleting) Color.Gray else Color.White
                             )
                         }
+
+                        // HISTORIAL - Solo admin
                         if (canSeeHistory) {
                             IconButton(
                                 onClick = { onHistoryClick(product) },
@@ -493,6 +501,8 @@ fun ProductItem(
                                 )
                             }
                         }
+
+                        // ELIMINAR - Solo admin
                         if (canDelete) {
                             IconButton(
                                 onClick = { showDialog.value = true },
@@ -538,7 +548,7 @@ fun ProductItem(
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.Black
                 )
-                if (userRole == "admin") {
+                if (isAdmin) {
                     Text(
                         text = "Precio Boleta: S/ ${product.precioBoleta}",
                         style = MaterialTheme.typography.bodyMedium,

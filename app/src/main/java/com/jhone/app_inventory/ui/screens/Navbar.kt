@@ -15,28 +15,36 @@ import com.jhone.app_inventory.R
 fun InventoryNavbar(
     onAddClick: () -> Unit,
     onSyncClick: () -> Unit,
-    onLogoutClick: () -> Unit
+    onLogoutClick: () -> Unit,
+    userRole: String = "asesor"
 ) {
+    val isAdmin = (userRole == "admin")
+
     TopAppBar(
         title = {
             Text(
-                text = "Control de Inventario", // "Control de Inventario"
+                text = "Control de Inventario",
                 color = Color.White,
-                style = MaterialTheme.typography.titleLarge // Cambia h6 a titleLarge
+                style = MaterialTheme.typography.titleLarge
             )
         },
         colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = Color(0xFF9C84C9), // Color rosa
+            containerColor = Color(0xFF9C84C9),
             titleContentColor = Color.White
         ),
         actions = {
-            IconButton(onClick = onAddClick) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = "Agregar Producto",
-                    tint = Color.White
-                )
+            // AGREGAR PRODUCTO - Solo admin
+            if (isAdmin) {
+                IconButton(onClick = onAddClick) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Agregar Producto",
+                        tint = Color.White
+                    )
+                }
             }
+
+            // SINCRONIZAR - Todos pueden
             IconButton(onClick = onSyncClick) {
                 Icon(
                     imageVector = Icons.Default.Refresh,
@@ -44,6 +52,8 @@ fun InventoryNavbar(
                     tint = Color.White
                 )
             }
+
+            // CERRAR SESIÓN - Todos pueden
             IconButton(onClick = onLogoutClick) {
                 Icon(
                     imageVector = Icons.Default.ExitToApp,
