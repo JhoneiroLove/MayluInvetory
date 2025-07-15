@@ -11,6 +11,7 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.ListenerRegistration
 import com.jhone.app_inventory.data.Movimiento
 import com.jhone.app_inventory.data.Product
+import com.jhone.app_inventory.data.repository.ProductRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,10 +21,12 @@ import javax.inject.Inject
 
 @HiltViewModel
 class ProductViewModel @Inject constructor(
+    private val productRepository: ProductRepository, // Repository para caché
     private val db: FirebaseFirestore,
     private val auth: FirebaseAuth
 ) : ViewModel() {
 
+    // ESTADOS DEL UI (mantienen la misma estructura)
     private val _products = MutableStateFlow<List<Product>>(emptyList())
     val products: StateFlow<List<Product>> = _products
 
@@ -39,37 +42,77 @@ class ProductViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
-    // Configuración de paginación
+    // CONFIGURACIÓN DE PAGINACIÓN
     private val pageSize = 20L
     private var lastVisibleDoc: DocumentSnapshot? = null
     private var allProductsLoaded = false
-
-    // Set para tracking de IDs cargados
     private val loadedProductIds = mutableSetOf<String>()
 
-    // Listener para movimientos solamente
+    // LISTENER PARA MOVIMIENTOS
     private var movimientosListener: ListenerRegistration? = null
 
     init {
-        loadFirstPage()
+        initializeDataWithCache()
     }
 
     /**
-     * Carga la primera página de productos
-     * Solo paginación manual, SIN listeners conflictivos
+     * INICIALIZACIÓN HÍBRIDA (Caché + Firebase)
+     * Carga desde caché inmediatamente, sincroniza en background
      */
-    private fun loadFirstPage() {
+    private fun initializeDataWithCache() {
         viewModelScope.launch {
             try {
                 _isLoading.value = true
                 _error.value = null
 
-                // Resetear estado
+                // 1. OBSERVAR CACHÉ LOCAL (Flow continuo, instantáneo)
+                viewModelScope.launch {
+                    productRepository.getProductsFlow().collect { cachedProducts ->
+                        _products.value = cachedProducts.sortedBy { it.codigo }
+                        Log.d("ProductViewModel", "Productos desde caché: ${cachedProducts.size}")
+
+                        // Actualizar tracking para compatibilidad con paginación existente
+                        loadedProductIds.clear()
+                        loadedProductIds.addAll(cachedProducts.map { it.id })
+                    }
+                }
+
+                // 2. INICIALIZAR CACHÉ SI ES NECESARIO
+                productRepository.initializeCache()
+                    .onSuccess {
+                        Log.d("ProductViewModel", "Caché inicializado correctamente")
+                    }
+                    .onFailure { error ->
+                        Log.e("ProductViewModel", "Error inicializando caché", error)
+                        _error.value = "Error cargando datos: ${error.message}"
+                        // 📱 FALLBACK: Si falla caché, usar método original
+                        loadFirstPageFallback()
+                    }
+
+            } catch (e: Exception) {
+                Log.e("ProductViewModel", "Error en inicialización híbrida", e)
+                _error.value = "Error inicializando datos: ${e.message}"
+                // 📱 FALLBACK: Usar método original si falla todo
+                loadFirstPageFallback()
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * Método original como respaldo
+     * Mantiene tu lógica actual si falla el caché
+     */
+    private fun loadFirstPageFallback() {
+        viewModelScope.launch {
+            try {
+                _isLoading.value = true
                 lastVisibleDoc = null
                 allProductsLoaded = false
                 loadedProductIds.clear()
 
-                Log.d("ProductViewModel", "Cargando primera página...")
+                Log.d("ProductViewModel", "FALLBACK: Cargando primera página desde Firebase...")
 
                 val firstPageQuery = db.collection("products")
                     .orderBy("codigo")
@@ -87,7 +130,7 @@ class ProductViewModel @Inject constructor(
                     }
 
                     _products.value = initialProducts.sortedBy { it.codigo }
-                    Log.d("ProductViewModel", "Primera página cargada: ${initialProducts.size} productos")
+                    Log.d("ProductViewModel", "FALLBACK: Primera página cargada: ${initialProducts.size} productos")
 
                 } else {
                     _products.value = emptyList()
@@ -95,7 +138,7 @@ class ProductViewModel @Inject constructor(
                 }
 
             } catch (e: Exception) {
-                Log.e("ProductViewModel", "Error cargando primera página", e)
+                Log.e("ProductViewModel", "Error en fallback", e)
                 _error.value = "Error cargando productos: ${e.message}"
             } finally {
                 _isLoading.value = false
@@ -104,12 +147,13 @@ class ProductViewModel @Inject constructor(
     }
 
     /**
-     * Cargar siguiente página de productos
-     * Evita duplicados y mantiene orden consistente
+     * CARGAR SIGUIENTE PÁGINA (adaptado para híbrido)
+     * Usa caché local si está disponible, Firebase como fallback
      */
     fun loadNextPage() {
+        // Con caché local, esto es menos crítico, pero mantenemos para compatibilidad
         if (allProductsLoaded || _isLoadingMore.value) {
-            Log.d("ProductViewModel", "No se puede cargar más: allLoaded=$allProductsLoaded, isLoading=${_isLoadingMore.value}")
+            Log.d("ProductViewModel", "loadNextPage: No se puede cargar más")
             return
         }
 
@@ -144,7 +188,6 @@ class ProductViewModel @Inject constructor(
                 }
 
                 if (newProducts.isNotEmpty()) {
-                    // Mantener orden correcto al agregar
                     val currentList = _products.value.toMutableList()
                     currentList.addAll(newProducts)
                     _products.value = currentList.sortedBy { it.codigo }
@@ -168,72 +211,112 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    private fun parseProductFromDocument(doc: DocumentSnapshot): Product? {
-        return try {
-            Product(
-                id = doc.id,
-                codigo = doc.getString("codigo") ?: "",
-                descripcion = doc.getString("descripcion") ?: "",
-                cantidad = doc.getLong("cantidad")?.toInt() ?: 0,
-                precioBoleta = doc.getDouble("precioBoleta") ?: 0.0,
-                precioCosto = doc.getDouble("precioCosto") ?: 0.0,
-                precioProducto = doc.getDouble("precioProducto") ?: 0.0,
-                proveedor = doc.getString("proveedor") ?: "",
-                createdAt = doc.getTimestamp("timestamp"),
-                fechaVencimiento = doc.getTimestamp("fechaVencimiento"),
-                porcentaje = doc.getDouble("porcentaje") ?: 0.0,
-                createdBy = doc.getString("createdBy") ?: "" // Leer usuario creador
-            )
-        } catch (e: Exception) {
-            Log.e("ProductViewModel", "Error parseando producto ${doc.id}", e)
-            null
+    /**
+     * BÚSQUEDA HÍBRIDA (Local primero, remota si es necesario)
+     * 0 lecturas Firebase para búsquedas locales
+     */
+    fun searchProductsInServer(query: String, onComplete: (List<Product>) -> Unit) {
+        if (query.isBlank()) {
+            onComplete(emptyList())
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                // ️ BÚSQUEDA LOCAL PRIMERO (INSTANTÁNEA, 0 lecturas Firebase)
+                val localResults = productRepository.searchProductsLocal(query)
+
+                if (localResults.isNotEmpty()) {
+                    Log.d("ProductViewModel", "Búsqueda LOCAL exitosa: ${localResults.size} resultados")
+                    onComplete(localResults)
+                } else {
+                    // BÚSQUEDA REMOTA solo si no encuentra localmente
+                    Log.d("ProductViewModel", "Sin resultados locales, buscando en servidor...")
+
+                    val cleanQuery = query.trim()
+                    val searchResults = mutableListOf<Product>()
+
+                    // Búsqueda por código
+                    val codeQuery = db.collection("products")
+                        .orderBy("codigo")
+                        .startAt(cleanQuery.uppercase())
+                        .endAt(cleanQuery.uppercase() + "\uf8ff")
+                        .limit(10)
+
+                    val codeResults = codeQuery.get().await()
+                    searchResults.addAll(
+                        codeResults.documents.mapNotNull { parseProductFromDocument(it) }
+                    )
+
+                    // Búsqueda por descripción si no encontró suficientes
+                    if (searchResults.size < 5) {
+                        val descQuery = db.collection("products")
+                            .orderBy("descripcion")
+                            .startAt(cleanQuery.uppercase())
+                            .endAt(cleanQuery.uppercase() + "\uf8ff")
+                            .limit(10)
+
+                        val descResults = descQuery.get().await()
+                        val descProducts = descResults.documents.mapNotNull { parseProductFromDocument(it) }
+
+                        descProducts.forEach { product ->
+                            if (searchResults.none { it.id == product.id }) {
+                                searchResults.add(product)
+                            }
+                        }
+                    }
+
+                    // Búsqueda por proveedor si aún no encontró suficientes
+                    if (searchResults.size < 5) {
+                        val provQuery = db.collection("products")
+                            .orderBy("proveedor")
+                            .startAt(cleanQuery.uppercase())
+                            .endAt(cleanQuery.uppercase() + "\uf8ff")
+                            .limit(10)
+
+                        val provResults = provQuery.get().await()
+                        val provProducts = provResults.documents.mapNotNull { parseProductFromDocument(it) }
+
+                        provProducts.forEach { product ->
+                            if (searchResults.none { it.id == product.id }) {
+                                searchResults.add(product)
+                            }
+                        }
+                    }
+
+                    Log.d("ProductViewModel", "Búsqueda REMOTA completada: ${searchResults.size} resultados")
+                    onComplete(searchResults.take(20))
+                }
+
+            } catch (e: Exception) {
+                Log.e("ProductViewModel", "Error en búsqueda híbrida", e)
+                onComplete(emptyList())
+            }
         }
     }
 
     /**
-     * Agregar un producto
-     * Mantener orden y evita duplicados
+     * AGREGAR PRODUCTO (Repository + Firebase)
+     * Actualiza caché automáticamente
      */
     fun addProduct(product: Product, onComplete: (success: Boolean, error: String?) -> Unit) {
         viewModelScope.launch {
             try {
                 _isLoading.value = true
 
-                val currentUserEmail = auth.currentUser?.email ?: "Usuario Desconocido"
-
-                val productMap = mapOf(
-                    "codigo" to product.codigo,
-                    "descripcion" to product.descripcion,
-                    "cantidad" to product.cantidad,
-                    "precioBoleta" to product.precioBoleta,
-                    "precioCosto" to product.precioCosto,
-                    "precioProducto" to product.precioProducto,
-                    "proveedor" to product.proveedor,
-                    "timestamp" to FieldValue.serverTimestamp(),
-                    "fechaVencimiento" to product.fechaVencimiento,
-                    "porcentaje" to product.porcentaje,
-                    "createdBy" to currentUserEmail // Guardar quién creó el producto
-                )
-
-                val docRef = db.collection("products").add(productMap).await()
-
-                // Agregar a la lista local en el lugar correcto por orden
-                val newProduct = product.copy(
-                    id = docRef.id,
-                    createdBy = currentUserEmail // Asegurar que el objeto local tenga el creador
-                )
-                if (!loadedProductIds.contains(newProduct.id)) {
-                    loadedProductIds.add(newProduct.id)
-                    val currentList = _products.value.toMutableList()
-                    currentList.add(newProduct)
-                    _products.value = currentList.sortedBy { it.codigo }
-                }
-
-                Log.d("ProductViewModel", "Producto añadido exitosamente: ${docRef.id}")
-                onComplete(true, null)
+                productRepository.addProduct(product)
+                    .onSuccess { newProduct ->
+                        Log.d("ProductViewModel", "Producto agregado exitosamente: ${newProduct.id}")
+                        // El caché se actualiza automáticamente vía Flow
+                        onComplete(true, null)
+                    }
+                    .onFailure { error ->
+                        Log.e("ProductViewModel", "Error agregando producto", error)
+                        onComplete(false, error.message)
+                    }
 
             } catch (e: Exception) {
-                Log.e("ProductViewModel", "Error al añadir producto", e)
+                Log.e("ProductViewModel", "Error en addProduct", e)
                 onComplete(false, e.message)
             } finally {
                 _isLoading.value = false
@@ -242,50 +325,27 @@ class ProductViewModel @Inject constructor(
     }
 
     /**
-     * Actualizar un producto
-     * Refresca desde servidor para evitar inconsistencias
+     * ACTUALIZAR PRODUCTO (Repository + Firebase)
+     * Actualiza caché automáticamente
      */
     fun updateProduct(product: Product, onComplete: (success: Boolean, error: String?) -> Unit) {
         viewModelScope.launch {
             try {
                 _isLoading.value = true
 
-                val productMap = mapOf(
-                    "codigo" to product.codigo,
-                    "descripcion" to product.descripcion,
-                    "cantidad" to product.cantidad,
-                    "precioBoleta" to product.precioBoleta,
-                    "precioCosto" to product.precioCosto,
-                    "precioProducto" to product.precioProducto,
-                    "proveedor" to product.proveedor,
-                    "timestamp" to FieldValue.serverTimestamp(),
-                    "fechaVencimiento" to product.fechaVencimiento,
-                    "porcentaje" to product.porcentaje
-                )
-
-                db.collection("products")
-                    .document(product.id)
-                    .update(productMap)
-                    .await()
-
-                // Obtener el producto actualizado desde el servidor
-                val updatedDoc = db.collection("products")
-                    .document(product.id)
-                    .get()
-                    .await()
-
-                if (updatedDoc.exists()) {
-                    val updatedProduct = parseProductFromDocument(updatedDoc)
-                    if (updatedProduct != null) {
-                        updateProductInList(updatedProduct)
+                productRepository.updateProduct(product)
+                    .onSuccess {
+                        Log.d("ProductViewModel", "Producto actualizado exitosamente: ${product.id}")
+                        // El caché se actualiza automáticamente vía Flow
+                        onComplete(true, null)
                     }
-                }
-
-                Log.d("ProductViewModel", "Producto actualizado: ${product.id}")
-                onComplete(true, null)
+                    .onFailure { error ->
+                        Log.e("ProductViewModel", "Error actualizando producto", error)
+                        onComplete(false, error.message)
+                    }
 
             } catch (e: Exception) {
-                Log.e("ProductViewModel", "Error al actualizar producto", e)
+                Log.e("ProductViewModel", "Error en updateProduct", e)
                 onComplete(false, e.message)
             } finally {
                 _isLoading.value = false
@@ -294,40 +354,43 @@ class ProductViewModel @Inject constructor(
     }
 
     /**
-     * Eliminar un producto
-     * Eliminación limpia de listas y tracking
+     * ELIMINAR PRODUCTO (Repository + Firebase)
+     * Limpia caché automáticamente
      */
     fun deleteProduct(product: Product, onComplete: (success: Boolean, error: String?) -> Unit) {
         viewModelScope.launch {
             try {
                 _isLoading.value = true
 
-                // Eliminar producto
-                db.collection("products")
-                    .document(product.id)
-                    .delete()
-                    .await()
+                // Eliminar movimientos relacionados primero
+                try {
+                    val movimientosSnapshot = db.collection("movimientos")
+                        .whereEqualTo("loteId", product.id)
+                        .get()
+                        .await()
 
-                // También eliminar movimientos relacionados
-                val movimientosSnapshot = db.collection("movimientos")
-                    .whereEqualTo("loteId", product.id)
-                    .get()
-                    .await()
-
-                val batch = db.batch()
-                for (doc in movimientosSnapshot.documents) {
-                    batch.delete(doc.reference)
+                    val batch = db.batch()
+                    for (doc in movimientosSnapshot.documents) {
+                        batch.delete(doc.reference)
+                    }
+                    batch.commit().await()
+                } catch (e: Exception) {
+                    Log.e("ProductViewModel", "Error eliminando movimientos", e)
                 }
-                batch.commit().await()
 
-                // Remover de la lista local y tracking
-                removeProductFromList(product.id)
-
-                Log.d("ProductViewModel", "Producto y movimientos eliminados: ${product.id}")
-                onComplete(true, null)
+                productRepository.deleteProduct(product.id)
+                    .onSuccess {
+                        Log.d("ProductViewModel", "Producto eliminado exitosamente: ${product.id}")
+                        // El caché se actualiza automáticamente vía Flow
+                        onComplete(true, null)
+                    }
+                    .onFailure { error ->
+                        Log.e("ProductViewModel", "Error eliminando producto", error)
+                        onComplete(false, error.message)
+                    }
 
             } catch (e: Exception) {
-                Log.e("ProductViewModel", "Error al eliminar producto", e)
+                Log.e("ProductViewModel", "Error en deleteProduct", e)
                 onComplete(false, e.message)
             } finally {
                 _isLoading.value = false
@@ -336,34 +399,9 @@ class ProductViewModel @Inject constructor(
     }
 
     /**
-     * Actualizar producto en lista local
-     * Mantiene orden
+     * MOVIMIENTO DE STOCK (con actualización en Repository)
+     * Mantiene tu lógica de transacciones Firebase
      */
-    private fun updateProductInList(updatedProduct: Product) {
-        val currentList = _products.value.toMutableList()
-        val index = currentList.indexOfFirst { it.id == updatedProduct.id }
-
-        if (index != -1) {
-            currentList[index] = updatedProduct
-            _products.value = currentList.sortedBy { it.codigo }
-            Log.d("ProductViewModel", "Producto actualizado en lista: ${updatedProduct.codigo}")
-        }
-    }
-
-    /**
-     * Remover producto de lista local
-     * Limpia tracking
-     */
-    private fun removeProductFromList(productId: String) {
-        val currentList = _products.value.toMutableList()
-        val removed = currentList.removeAll { it.id == productId }
-        if (removed) {
-            loadedProductIds.remove(productId)
-            _products.value = currentList
-            Log.d("ProductViewModel", "Producto eliminado de la lista: $productId")
-        }
-    }
-
     fun addMovimiento(movimiento: Movimiento, onComplete: (success: Boolean, error: String?) -> Unit) {
         viewModelScope.launch {
             try {
@@ -401,22 +439,16 @@ class ProductViewModel @Inject constructor(
                     null
                 }.await()
 
-                // Actualizar cantidad en la lista local
-                val currentList = _products.value.toMutableList()
-                val productIndex = currentList.indexOfFirst { it.id == movimiento.loteId }
-                if (productIndex != -1) {
-                    val updatedProduct = currentList[productIndex].copy(
-                        cantidad = if (movimiento.tipo == "ingreso") {
-                            currentList[productIndex].cantidad + movimiento.cantidad
-                        } else {
-                            currentList[productIndex].cantidad - movimiento.cantidad
-                        }
-                    )
-                    currentList[productIndex] = updatedProduct
-                    _products.value = currentList
+                // Actualizar cantidad en el Repository (caché local)
+                val finalQuantity = if (movimiento.tipo == "ingreso") {
+                    _products.value.find { it.id == movimiento.loteId }?.cantidad?.plus(movimiento.cantidad) ?: 0
+                } else {
+                    _products.value.find { it.id == movimiento.loteId }?.cantidad?.minus(movimiento.cantidad) ?: 0
                 }
 
-                Log.d("ProductViewModel", "Movimiento añadido exitosamente")
+                productRepository.updateProductQuantity(movimiento.loteId, finalQuantity)
+
+                Log.d("ProductViewModel", "Movimiento agregado exitosamente")
                 onComplete(true, null)
 
             } catch (e: Exception) {
@@ -428,6 +460,49 @@ class ProductViewModel @Inject constructor(
         }
     }
 
+    /**
+     * REFRESCAR DATOS (Fuerza sincronización completa)
+     * Usa Repository para sincronización optimizada
+     */
+    fun refreshData() {
+        viewModelScope.launch {
+            try {
+                _isLoading.value = true
+                movimientosListener?.remove()
+
+                productRepository.forceSync()
+                    .onSuccess {
+                        Log.d("ProductViewModel", "Sincronización forzada exitosa")
+                        // Reset estado de paginación
+                        lastVisibleDoc = null
+                        allProductsLoaded = false
+                        loadedProductIds.clear()
+                    }
+                    .onFailure { error ->
+                        _error.value = "Error sincronizando: ${error.message}"
+                        Log.e("ProductViewModel", "Error en sincronización forzada", error)
+                    }
+
+            } catch (e: Exception) {
+                _error.value = "Error refrescando datos: ${e.message}"
+                Log.e("ProductViewModel", "Error en refreshData", e)
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * SINCRONIZAR (Alias de refresh)
+     */
+    fun syncData() {
+        refreshData()
+    }
+
+    /**
+     * ESCUCHAR MOVIMIENTOS (sin cambios)
+     * Mantiene tu lógica actual para movimientos
+     */
     fun listenToMovimientosForProduct(productId: String) {
         try {
             movimientosListener?.remove()
@@ -435,7 +510,7 @@ class ProductViewModel @Inject constructor(
             movimientosListener = db.collection("movimientos")
                 .whereEqualTo("loteId", productId)
                 .orderBy("fecha", Query.Direction.DESCENDING)
-                .limit(50) // Limitar a 50 movimientos más recientes
+                .limit(50)
                 .addSnapshotListener { snapshot, e ->
                     if (e != null) {
                         Log.e("ProductViewModel", "Error al escuchar movimientos", e)
@@ -473,107 +548,58 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Función para refrescar completamente los datos
-     * Limpia todo el estado antes de recargar
-     */
-    fun refreshData() {
-        viewModelScope.launch {
-            movimientosListener?.remove()
-            _products.value = emptyList()
-            loadedProductIds.clear()
-            loadFirstPage()
+    // FUNCIONES DE UTILIDAD
+
+    private fun parseProductFromDocument(doc: DocumentSnapshot): Product? {
+        return try {
+            Product(
+                id = doc.id,
+                codigo = doc.getString("codigo") ?: "",
+                descripcion = doc.getString("descripcion") ?: "",
+                cantidad = doc.getLong("cantidad")?.toInt() ?: 0,
+                precioBoleta = doc.getDouble("precioBoleta") ?: 0.0,
+                precioCosto = doc.getDouble("precioCosto") ?: 0.0,
+                precioProducto = doc.getDouble("precioProducto") ?: 0.0,
+                proveedor = doc.getString("proveedor") ?: "",
+                createdAt = doc.getTimestamp("timestamp"),
+                fechaVencimiento = doc.getTimestamp("fechaVencimiento"),
+                porcentaje = doc.getDouble("porcentaje") ?: 0.0,
+                createdBy = doc.getString("createdBy") ?: ""
+            )
+        } catch (e: Exception) {
+            Log.e("ProductViewModel", "Error parseando producto ${doc.id}", e)
+            null
         }
     }
 
-    /**
-     * Función para sincronizar (alias de refresh)
-     */
-    fun syncData() {
-        refreshData()
-    }
+    private fun updateProductInList(updatedProduct: Product) {
+        val currentList = _products.value.toMutableList()
+        val index = currentList.indexOfFirst { it.id == updatedProduct.id }
 
-    // Función para buscar productos específicos en el servidor
-    fun searchProductsInServer(query: String, onComplete: (List<Product>) -> Unit) {
-        if (query.isBlank()) {
-            onComplete(emptyList())
-            return
-        }
-
-        viewModelScope.launch {
-            try {
-                val cleanQuery = query.trim()
-                val searchResults = mutableListOf<Product>()
-
-                Log.d("ProductViewModel", "Buscando '$cleanQuery' en servidor...")
-
-                // Búsqueda por código
-                val codeQuery = db.collection("products")
-                    .orderBy("codigo")
-                    .startAt(cleanQuery.uppercase())
-                    .endAt(cleanQuery.uppercase() + "\uf8ff")
-                    .limit(10)
-
-                val codeResults = codeQuery.get().await()
-                searchResults.addAll(
-                    codeResults.documents.mapNotNull { parseProductFromDocument(it) }
-                )
-
-                // Búsqueda por descripción (si no encontró suficientes por código)
-                if (searchResults.size < 5) {
-                    val descQuery = db.collection("products")
-                        .orderBy("descripcion")
-                        .startAt(cleanQuery.uppercase())
-                        .endAt(cleanQuery.uppercase() + "\uf8ff")
-                        .limit(10)
-
-                    val descResults = descQuery.get().await()
-                    val descProducts = descResults.documents.mapNotNull { parseProductFromDocument(it) }
-
-                    // Agregar solo productos que no están ya en los resultados
-                    descProducts.forEach { product ->
-                        if (searchResults.none { it.id == product.id }) {
-                            searchResults.add(product)
-                        }
-                    }
-                }
-
-                // Búsqueda por proveedor (si aún no encontró suficientes)
-                if (searchResults.size < 5) {
-                    val provQuery = db.collection("products")
-                        .orderBy("proveedor")
-                        .startAt(cleanQuery.uppercase())
-                        .endAt(cleanQuery.uppercase() + "\uf8ff")
-                        .limit(10)
-
-                    val provResults = provQuery.get().await()
-                    val provProducts = provResults.documents.mapNotNull { parseProductFromDocument(it) }
-
-                    provProducts.forEach { product ->
-                        if (searchResults.none { it.id == product.id }) {
-                            searchResults.add(product)
-                        }
-                    }
-                }
-
-                Log.d("ProductViewModel", "Búsqueda en servidor completada: ${searchResults.size} resultados")
-                onComplete(searchResults.take(20)) // Limitar a 20 resultados
-
-            } catch (e: Exception) {
-                Log.e("ProductViewModel", "Error en búsqueda en servidor", e)
-                onComplete(emptyList())
-            }
+        if (index != -1) {
+            currentList[index] = updatedProduct
+            _products.value = currentList.sortedBy { it.codigo }
+            Log.d("ProductViewModel", "Producto actualizado en lista: ${updatedProduct.codigo}")
         }
     }
 
-    // Limpiar recursos
+    private fun removeProductFromList(productId: String) {
+        val currentList = _products.value.toMutableList()
+        val removed = currentList.removeAll { it.id == productId }
+        if (removed) {
+            loadedProductIds.remove(productId)
+            _products.value = currentList
+            Log.d("ProductViewModel", "Producto eliminado de la lista: $productId")
+        }
+    }
+
+    // LIMPIAR RECURSOS
+    fun clearError() {
+        _error.value = null
+    }
+
     override fun onCleared() {
         super.onCleared()
         movimientosListener?.remove()
-    }
-
-    // Función para limpiar errores
-    fun clearError() {
-        _error.value = null
     }
 }

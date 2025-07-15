@@ -10,5 +10,8 @@ class MyInventoryApplication : Application() {
         super.onCreate()
         // Inicialización de Firebase
         FirebaseApp.initializeApp(this)
+
+        // Room se inicializa automáticamente por Hilt cuando se necesite
+        android.util.Log.d("MyInventoryApplication", "Aplicación inicializada con Room + Firebase")
     }
 }
