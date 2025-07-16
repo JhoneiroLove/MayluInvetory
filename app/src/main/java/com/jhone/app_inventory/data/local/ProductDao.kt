@@ -14,13 +14,18 @@ interface ProductDao {
 
     @Query("""
         SELECT * FROM products 
-        WHERE codigo LIKE '%' || :query || '%' 
-           OR descripcion LIKE '%' || :query || '%' 
-           OR proveedor LIKE '%' || :query || '%'
+        WHERE LOWER(codigo) LIKE '%' || LOWER(:query) || '%' 
+           OR LOWER(descripcion) LIKE '%' || LOWER(:query) || '%' 
+           OR LOWER(proveedor) LIKE '%' || LOWER(:query) || '%'
         ORDER BY 
-            CASE WHEN codigo LIKE :query || '%' THEN 1 
-                 WHEN descripcion LIKE :query || '%' THEN 2 
-                 ELSE 3 END,
+            CASE 
+                WHEN LOWER(codigo) LIKE LOWER(:query) || '%' THEN 1
+                WHEN LOWER(descripcion) LIKE LOWER(:query) || '%' THEN 2
+                WHEN LOWER(codigo) LIKE '%' || LOWER(:query) || '%' THEN 3
+                WHEN LOWER(descripcion) LIKE '%' || LOWER(:query) || '%' THEN 4
+                WHEN LOWER(proveedor) LIKE '%' || LOWER(:query) || '%' THEN 5
+                ELSE 6 
+            END,
             codigo ASC
         LIMIT 50
     """)

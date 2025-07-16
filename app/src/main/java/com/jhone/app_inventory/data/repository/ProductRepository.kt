@@ -1,13 +1,10 @@
 package com.jhone.app_inventory.data.repository
 
-import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
 import com.jhone.app_inventory.data.Product
 import com.jhone.app_inventory.data.local.ProductDao
-import com.jhone.app_inventory.data.local.ProductEntity
 import com.jhone.app_inventory.data.local.toEntity
 import com.jhone.app_inventory.data.local.toProduct
 import kotlinx.coroutines.flow.Flow
@@ -24,9 +21,7 @@ class ProductRepository @Inject constructor(
 ) {
 
     companion object {
-        private const val TAG = "ProductRepository"
-        private const val PAGE_SIZE = 20L
-        private const val SYNC_THRESHOLD_HOURS = 6 // Sincronizar cada 6 horas
+        private const val SYNC_THRESHOLD_HOURS = 6
     }
 
     // FLUJO PRINCIPAL - Lee desde caché local
@@ -35,37 +30,46 @@ class ProductRepository @Inject constructor(
             .map { entities -> entities.map { it.toProduct() } }
     }
 
-    // BÚSQUEDA LOCAL INSTANTÁNEA (0 lecturas Firebase)
+    // BÚSQUEDA LOCAL INSTANTÁNEA
     suspend fun searchProductsLocal(query: String): List<Product> {
         return try {
             if (query.isBlank()) {
                 productDao.getProductsPaginated(50, 0).map { it.toProduct() }
             } else {
-                productDao.searchProducts(query.trim()).map { it.toProduct() }
+                val cleanQuery = query.trim()
+                val searchResults = productDao.searchProducts(cleanQuery)
+                val products = searchResults.map { it.toProduct() }
+
+                // Ordenar por relevancia
+                products.sortedWith(compareBy<Product> { product ->
+                    when {
+                        product.codigo.startsWith(cleanQuery, ignoreCase = true) -> 1
+                        product.descripcion.startsWith(cleanQuery, ignoreCase = true) -> 2
+                        product.codigo.contains(cleanQuery, ignoreCase = true) -> 3
+                        product.descripcion.contains(cleanQuery, ignoreCase = true) -> 4
+                        product.proveedor.contains(cleanQuery, ignoreCase = true) -> 5
+                        else -> 6
+                    }
+                }.thenBy { it.codigo })
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error en búsqueda local", e)
             emptyList()
         }
     }
 
-    // SINCRONIZACIÓN INICIAL (solo si caché vacío)
+    // SINCRONIZACIÓN INICIAL
     suspend fun initializeCache(): Result<Unit> {
         return try {
             val localCount = productDao.getProductCount()
-            Log.d(TAG, "Productos en caché: $localCount")
 
             if (localCount == 0) {
-                Log.d(TAG, "Caché vacío, sincronizando desde Firebase...")
                 syncFromFirebase()
             } else {
-                Log.d(TAG, "Usando caché existente")
                 syncIfNeeded()
             }
 
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(TAG, "Error inicializando caché", e)
             Result.failure(e)
         }
     }
@@ -73,14 +77,11 @@ class ProductRepository @Inject constructor(
     // SINCRONIZACIÓN COMPLETA DESDE FIREBASE
     private suspend fun syncFromFirebase() {
         try {
-            Log.d(TAG, "Iniciando sincronización completa...")
-
             val query = firestore.collection("products")
                 .orderBy("codigo")
-                .limit(200) // Limitar para evitar muchas lecturas
+                .limit(1000)
 
             val snapshot = query.get().await()
-            Log.d(TAG, "Obtenidos ${snapshot.documents.size} productos de Firebase")
 
             val products = snapshot.documents.mapNotNull { doc ->
                 try {
@@ -99,7 +100,6 @@ class ProductRepository @Inject constructor(
                         createdBy = doc.getString("createdBy") ?: ""
                     )
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error parseando producto ${doc.id}", e)
                     null
                 }
             }
@@ -108,33 +108,71 @@ class ProductRepository @Inject constructor(
             productDao.clearAll()
             productDao.insertProducts(products.map { it.toEntity() })
 
-            Log.d(TAG, "Sincronización completa exitosa: ${products.size} productos")
         } catch (e: Exception) {
-            Log.e(TAG, "Error en sincronización completa", e)
             throw e
         }
     }
 
-    // SINCRONIZACIÓN CONDICIONAL (solo si es necesario)
+    // BÚSQUEDA DE PRODUCTO ESPECÍFICO
+    suspend fun findSpecificProduct(codigo: String): Product? {
+        return try {
+            // Primero buscar en caché local
+            val localProduct = productDao.searchProducts(codigo).firstOrNull()
+            if (localProduct != null) {
+                return localProduct.toProduct()
+            }
+
+            // Si no está en caché, buscar directamente en Firebase
+            val snapshot = firestore.collection("products")
+                .whereEqualTo("codigo", codigo)
+                .limit(1)
+                .get()
+                .await()
+
+            if (snapshot.documents.isNotEmpty()) {
+                val doc = snapshot.documents.first()
+                val product = Product(
+                    id = doc.id,
+                    codigo = doc.getString("codigo") ?: "",
+                    descripcion = doc.getString("descripcion") ?: "",
+                    cantidad = doc.getLong("cantidad")?.toInt() ?: 0,
+                    precioBoleta = doc.getDouble("precioBoleta") ?: 0.0,
+                    precioCosto = doc.getDouble("precioCosto") ?: 0.0,
+                    precioProducto = doc.getDouble("precioProducto") ?: 0.0,
+                    proveedor = doc.getString("proveedor") ?: "",
+                    createdAt = doc.getTimestamp("timestamp"),
+                    fechaVencimiento = doc.getTimestamp("fechaVencimiento"),
+                    porcentaje = doc.getDouble("porcentaje") ?: 0.0,
+                    createdBy = doc.getString("createdBy") ?: ""
+                )
+
+                // Guardar en caché para futuras búsquedas
+                productDao.insertProduct(product.toEntity())
+                return product
+            }
+
+            null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // SINCRONIZACIÓN CONDICIONAL
     private suspend fun syncIfNeeded() {
         try {
             val sixHoursAgo = System.currentTimeMillis() - (SYNC_THRESHOLD_HOURS * 60 * 60 * 1000)
             val oldProducts = productDao.getProductsOlderThan(sixHoursAgo)
 
             if (oldProducts.isNotEmpty()) {
-                Log.d(TAG, "Sincronizando ${oldProducts.size} productos antiguos...")
-                // Aquí podrías implementar sincronización selectiva
-                // Por ahora, solo actualizar timestamp
                 oldProducts.forEach {
                     productDao.updateSyncTimestamp(it.id, System.currentTimeMillis())
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error en sincronización condicional", e)
         }
     }
 
-    // AGREGAR PRODUCTO (Firebase + Caché)
+    // AGREGAR PRODUCTO
     suspend fun addProduct(product: Product): Result<Product> {
         return try {
             val currentUserEmail = auth.currentUser?.email ?: "Usuario Desconocido"
@@ -163,16 +201,13 @@ class ProductRepository @Inject constructor(
             // Guardar en caché local inmediatamente
             productDao.insertProduct(newProduct.toEntity())
 
-            Log.d(TAG, "Producto agregado: ${docRef.id}")
             Result.success(newProduct)
-
         } catch (e: Exception) {
-            Log.e(TAG, "Error agregando producto", e)
             Result.failure(e)
         }
     }
 
-    // ACTUALIZAR PRODUCTO (Firebase + Caché)
+    // ACTUALIZAR PRODUCTO
     suspend fun updateProduct(product: Product): Result<Product> {
         return try {
             val productMap = mapOf(
@@ -196,16 +231,13 @@ class ProductRepository @Inject constructor(
             // Actualizar caché local
             productDao.updateProduct(product.toEntity())
 
-            Log.d(TAG, "Producto actualizado: ${product.id}")
             Result.success(product)
-
         } catch (e: Exception) {
-            Log.e(TAG, "Error actualizando producto", e)
             Result.failure(e)
         }
     }
 
-    // ELIMINAR PRODUCTO (Firebase + Caché)
+    // ELIMINAR PRODUCTO
     suspend fun deleteProduct(productId: String): Result<Unit> {
         return try {
             firestore.collection("products")
@@ -216,16 +248,13 @@ class ProductRepository @Inject constructor(
             // Eliminar de caché local
             productDao.deleteProductById(productId)
 
-            Log.d(TAG, "Producto eliminado: $productId")
             Result.success(Unit)
-
         } catch (e: Exception) {
-            Log.e(TAG, "Error eliminando producto", e)
             Result.failure(e)
         }
     }
 
-    // ACTUALIZAR CANTIDAD (para movimientos de stock)
+    // ACTUALIZAR CANTIDAD
     suspend fun updateProductQuantity(productId: String, newQuantity: Int): Result<Unit> {
         return try {
             firestore.collection("products")
@@ -236,20 +265,15 @@ class ProductRepository @Inject constructor(
             // Actualizar caché local
             productDao.updateProductQuantity(productId, newQuantity)
 
-            Log.d(TAG, "Cantidad actualizada para producto: $productId")
             Result.success(Unit)
-
         } catch (e: Exception) {
-            Log.e(TAG, "Error actualizando cantidad", e)
             Result.failure(e)
         }
     }
 
-    // BÚSQUEDA REMOTA (solo si no encuentra local)
+    // BÚSQUEDA REMOTA
     suspend fun searchProductsRemote(query: String): List<Product> {
         return try {
-            Log.d(TAG, "Búsqueda remota: $query")
-
             val cleanQuery = query.trim()
             val searchResults = mutableListOf<Product>()
 
@@ -284,16 +308,13 @@ class ProductRepository @Inject constructor(
                 }
             )
 
-            Log.d(TAG, "Búsqueda remota completada: ${searchResults.size} resultados")
             searchResults.take(20)
-
         } catch (e: Exception) {
-            Log.e(TAG, "Error en búsqueda remota", e)
             emptyList()
         }
     }
 
-    // FORZAR SINCRONIZACIÓN COMPLETA
+    // FORZAR SINCRONIZACIÓN
     suspend fun forceSync(): Result<Unit> {
         return try {
             syncFromFirebase()

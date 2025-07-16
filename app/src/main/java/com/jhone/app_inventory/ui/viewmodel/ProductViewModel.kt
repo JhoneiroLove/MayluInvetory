@@ -212,8 +212,8 @@ class ProductViewModel @Inject constructor(
     }
 
     /**
-     * BÚSQUEDA HÍBRIDA (Local primero, remota si es necesario)
-     * 0 lecturas Firebase para búsquedas locales
+     * BÚSQUEDA HÍBRIDA (Local primero, luego remota)
+     * 0 lecturas Firebase para búsquedas locales en cache
      */
     fun searchProductsInServer(query: String, onComplete: (List<Product>) -> Unit) {
         if (query.isBlank()) {
@@ -223,20 +223,20 @@ class ProductViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // ️ BÚSQUEDA LOCAL PRIMERO (INSTANTÁNEA, 0 lecturas Firebase)
+                // 1. VERIFICAR CACHÉ LOCAL PRIMERO
                 val localResults = productRepository.searchProductsLocal(query)
 
                 if (localResults.isNotEmpty()) {
-                    Log.d("ProductViewModel", "Búsqueda LOCAL exitosa: ${localResults.size} resultados")
                     onComplete(localResults)
-                } else {
-                    // BÚSQUEDA REMOTA solo si no encuentra localmente
-                    Log.d("ProductViewModel", "Sin resultados locales, buscando en servidor...")
+                    return@launch
+                }
 
-                    val cleanQuery = query.trim()
-                    val searchResults = mutableListOf<Product>()
+                // 2. BÚSQUEDA REMOTA EN FIREBASE
+                val cleanQuery = query.trim()
+                val searchResults = mutableListOf<Product>()
 
-                    // Búsqueda por código
+                // 2.1 Búsqueda por código
+                try {
                     val codeQuery = db.collection("products")
                         .orderBy("codigo")
                         .startAt(cleanQuery.uppercase())
@@ -244,52 +244,84 @@ class ProductViewModel @Inject constructor(
                         .limit(10)
 
                     val codeResults = codeQuery.get().await()
-                    searchResults.addAll(
-                        codeResults.documents.mapNotNull { parseProductFromDocument(it) }
-                    )
+                    val codeProducts = codeResults.documents.mapNotNull { doc ->
+                        parseProductFromDocument(doc)
+                    }
+                    searchResults.addAll(codeProducts)
+                } catch (e: Exception) {
+                }
 
-                    // Búsqueda por descripción si no encontró suficientes
-                    if (searchResults.size < 5) {
-                        val descQuery = db.collection("products")
+                // 2.2 Búsqueda por descripción
+                try {
+                    // Búsqueda normal
+                    val descQuery = db.collection("products")
+                        .orderBy("descripcion")
+                        .startAt(cleanQuery)
+                        .endAt(cleanQuery + "\uf8ff")
+                        .limit(10)
+
+                    val descResults = descQuery.get().await()
+                    val descProducts = descResults.documents.mapNotNull { doc ->
+                        parseProductFromDocument(doc)
+                    }
+
+                    descProducts.forEach { product ->
+                        if (searchResults.none { it.id == product.id }) {
+                            searchResults.add(product)
+                        }
+                    }
+
+                    // Si no encuentra, intentar con uppercase
+                    if (descProducts.isEmpty()) {
+                        val descQueryUpper = db.collection("products")
                             .orderBy("descripcion")
                             .startAt(cleanQuery.uppercase())
                             .endAt(cleanQuery.uppercase() + "\uf8ff")
                             .limit(10)
 
-                        val descResults = descQuery.get().await()
-                        val descProducts = descResults.documents.mapNotNull { parseProductFromDocument(it) }
+                        val descResultsUpper = descQueryUpper.get().await()
+                        val descProductsUpper = descResultsUpper.documents.mapNotNull { doc ->
+                            parseProductFromDocument(doc)
+                        }
 
-                        descProducts.forEach { product ->
+                        descProductsUpper.forEach { product ->
                             if (searchResults.none { it.id == product.id }) {
                                 searchResults.add(product)
                             }
                         }
                     }
 
-                    // Búsqueda por proveedor si aún no encontró suficientes
-                    if (searchResults.size < 5) {
-                        val provQuery = db.collection("products")
-                            .orderBy("proveedor")
-                            .startAt(cleanQuery.uppercase())
-                            .endAt(cleanQuery.uppercase() + "\uf8ff")
-                            .limit(10)
+                    // Búsqueda manual en muestra
+                    if (searchResults.isEmpty()) {
+                        val sampleQuery = db.collection("products")
+                            .limit(100)
 
-                        val provResults = provQuery.get().await()
-                        val provProducts = provResults.documents.mapNotNull { parseProductFromDocument(it) }
+                        val sampleResults = sampleQuery.get().await()
+                        val manualMatches = sampleResults.documents.mapNotNull { doc ->
+                            val product = parseProductFromDocument(doc)
+                            if (product != null && (
+                                        product.descripcion.contains(cleanQuery, ignoreCase = true) ||
+                                                product.proveedor.contains(cleanQuery, ignoreCase = true)
+                                        )) {
+                                product
+                            } else {
+                                null
+                            }
+                        }
 
-                        provProducts.forEach { product ->
+                        manualMatches.forEach { product ->
                             if (searchResults.none { it.id == product.id }) {
                                 searchResults.add(product)
                             }
                         }
                     }
 
-                    Log.d("ProductViewModel", "Búsqueda REMOTA completada: ${searchResults.size} resultados")
-                    onComplete(searchResults.take(20))
+                } catch (e: Exception) {
                 }
 
+                onComplete(searchResults.take(20))
+
             } catch (e: Exception) {
-                Log.e("ProductViewModel", "Error en búsqueda híbrida", e)
                 onComplete(emptyList())
             }
         }
