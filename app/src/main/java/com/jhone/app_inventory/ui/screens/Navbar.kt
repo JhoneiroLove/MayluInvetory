@@ -33,15 +33,13 @@ fun InventoryNavbar(
             titleContentColor = Color.White
         ),
         actions = {
-            // AGREGAR PRODUCTO - Solo admin
-            if (isAdmin) {
-                IconButton(onClick = onAddClick) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Agregar Producto",
-                        tint = Color.White
-                    )
-                }
+            // AGREGAR PRODUCTO - admin y asesor pueden agregar
+            IconButton(onClick = onAddClick) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Agregar Producto",
+                    tint = Color.White
+                )
             }
 
             // SINCRONIZAR - Todos pueden

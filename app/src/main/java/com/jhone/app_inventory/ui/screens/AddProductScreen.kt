@@ -30,9 +30,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.foundation.layout.fillMaxWidth
-import com.google.firebase.Timestamp
 import com.jhone.app_inventory.data.Product
 import com.jhone.app_inventory.ui.viewmodel.ProductViewModel
+import com.jhone.app_inventory.ui.components.DatePickerField
+import com.jhone.app_inventory.ui.components.DateValidator
 import com.jhone.app_inventory.utils.DateUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -158,6 +159,7 @@ fun AddProductScreen(
                     colors = fieldColors,
                     enabled = !isLoading
                 )
+
                 // Solo admin puede editar precio boleta y porcentaje
                 if (isAdmin) {
                     OutlinedTextField(
@@ -179,7 +181,8 @@ fun AddProductScreen(
                         enabled = !isLoading
                     )
                 }
-                // Ocultamos campos de Precio Costo y Precio Público para asesores
+
+                // Ocultar campos de Precio Costo y Precio Público para asesores
                 if (isAdmin) {
                     OutlinedTextField(
                         value = String.format("%.2f", precioCosto),
@@ -198,14 +201,22 @@ fun AddProductScreen(
                         colors = fieldColors
                     )
                 }
-                // Fecha de Vencimiento
-                OutlinedTextField(
+
+                // DatePicker Field para Fecha de Vencimiento
+                DatePickerField(
                     value = fechaVencimientoText,
-                    onValueChange = { fechaVencimientoText = it },
-                    label = { Text("Fecha Venc. (dd/MM/yyyy)") },
+                    onValueChange = {
+                        fechaVencimientoText = it
+                        // Limpiar error si había uno relacionado con fecha
+                        if (errorMessage?.contains("fecha") == true) {
+                            errorMessage = null
+                        }
+                    },
+                    label = "Fecha de Vencimiento",
                     modifier = Modifier.fillMaxWidth(),
-                    colors = fieldColors,
-                    enabled = !isLoading
+                    enabled = !isLoading,
+                    isRequired = false,
+                    colors = fieldColors
                 )
 
                 Button(
@@ -234,6 +245,11 @@ fun AddProductScreen(
                             }
                             isAdmin && (porcentajeText.isBlank() || porcentajeText.toDoubleOrNull() == null) -> {
                                 errorMessage = "El porcentaje debe ser un número válido"
+                                return@Button
+                            }
+                            // Validación de fecha
+                            fechaVencimientoText.isNotBlank() && !DateValidator.isValidDateFormat(fechaVencimientoText) -> {
+                                errorMessage = DateValidator.getDateValidationMessage(fechaVencimientoText)
                                 return@Button
                             }
                         }
