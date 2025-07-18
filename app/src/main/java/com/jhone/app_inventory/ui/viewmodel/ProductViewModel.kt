@@ -4,7 +4,6 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.Query
@@ -26,7 +25,6 @@ class ProductViewModel @Inject constructor(
     private val auth: FirebaseAuth
 ) : ViewModel() {
 
-    // ESTADOS DEL UI (mantienen la misma estructura)
     private val _products = MutableStateFlow<List<Product>>(emptyList())
     val products: StateFlow<List<Product>> = _products
 
@@ -48,8 +46,9 @@ class ProductViewModel @Inject constructor(
     private var allProductsLoaded = false
     private val loadedProductIds = mutableSetOf<String>()
 
-    // LISTENER PARA MOVIMIENTOS
+    // Gestión mejorada de listeners
     private var movimientosListener: ListenerRegistration? = null
+    private var currentProductId: String? = null
 
     init {
         initializeDataWithCache()
@@ -430,20 +429,29 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    /**
-     * MOVIMIENTO DE STOCK (con actualización en Repository)
-     * Mantiene tu lógica de transacciones Firebase
-     */
+    // Funcion limpiar listeners específicamente
+    fun clearMovimientosListener() {
+        try {
+            movimientosListener?.remove()
+            movimientosListener = null
+            currentProductId = null
+            _movimientos.value = emptyList()
+            Log.d("ProductViewModel", "Listeners de movimientos limpiados")
+        } catch (e: Exception) {
+            Log.e("ProductViewModel", "Error limpiando listeners", e)
+        }
+    }
+
+    // Movimiento con mejor manejo de estados
     fun addMovimiento(movimiento: Movimiento, onComplete: (success: Boolean, error: String?) -> Unit) {
         viewModelScope.launch {
             try {
-                _isLoading.value = true
-
                 val currentUserEmail = auth.currentUser?.email ?: "UsuarioDesconocido"
                 val productRef = db.collection("products").document(movimiento.loteId)
                 val movimientoRef = db.collection("movimientos").document()
 
-                db.runTransaction { transaction ->
+                // Usar runTransaction de forma más eficiente
+                val result = db.runTransaction { transaction ->
                     val productSnapshot = transaction.get(productRef)
                     if (!productSnapshot.exists()) {
                         throw Exception("El producto no existe")
@@ -460,34 +468,29 @@ class ProductViewModel @Inject constructor(
                         throw Exception("No hay stock suficiente para realizar la salida.")
                     }
 
+                    // Actualizar producto
                     transaction.update(productRef, "cantidad", newQuantity)
 
+                    // Crear movimiento
                     val movimientoConUsuarioReal = movimiento.copy(
                         id = movimientoRef.id,
                         usuario = currentUserEmail
                     )
                     transaction.set(movimientoRef, movimientoConUsuarioReal)
 
-                    null
+                    // Retornar nueva cantidad para actualización local
+                    newQuantity.toInt()
                 }.await()
 
-                // Actualizar cantidad en el Repository (caché local)
-                val finalQuantity = if (movimiento.tipo == "ingreso") {
-                    _products.value.find { it.id == movimiento.loteId }?.cantidad?.plus(movimiento.cantidad) ?: 0
-                } else {
-                    _products.value.find { it.id == movimiento.loteId }?.cantidad?.minus(movimiento.cantidad) ?: 0
-                }
+                // Actualizar caché local inmediatamente
+                productRepository.updateProductQuantity(movimiento.loteId, result)
 
-                productRepository.updateProductQuantity(movimiento.loteId, finalQuantity)
-
-                Log.d("ProductViewModel", "Movimiento agregado exitosamente")
+                Log.d("ProductViewModel", "Movimiento agregado exitosamente, nueva cantidad: $result")
                 onComplete(true, null)
 
             } catch (e: Exception) {
                 Log.e("ProductViewModel", "Error en la transacción de movimiento", e)
                 onComplete(false, e.message)
-            } finally {
-                _isLoading.value = false
             }
         }
     }
@@ -500,7 +503,7 @@ class ProductViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 _isLoading.value = true
-                movimientosListener?.remove()
+                clearMovimientosListener()
 
                 productRepository.forceSync()
                     .onSuccess {
@@ -531,13 +534,19 @@ class ProductViewModel @Inject constructor(
         refreshData()
     }
 
-    /**
-     * ESCUCHAR MOVIMIENTOS (sin cambios)
-     * Mantiene tu lógica actual para movimientos
-     */
     fun listenToMovimientosForProduct(productId: String) {
         try {
-            movimientosListener?.remove()
+            // Si ya estamos escuchando el mismo producto, no hacer nada
+            if (currentProductId == productId && movimientosListener != null) {
+                Log.d("ProductViewModel", "Ya existe listener para producto: $productId")
+                return
+            }
+
+            // Limpiar listener anterior si existe
+            clearMovimientosListener()
+
+            // Establecer nuevo listener
+            currentProductId = productId
 
             movimientosListener = db.collection("movimientos")
                 .whereEqualTo("loteId", productId)
@@ -550,7 +559,7 @@ class ProductViewModel @Inject constructor(
                     }
 
                     try {
-                        if (snapshot != null) {
+                        if (snapshot != null && !snapshot.isEmpty) {
                             val movimientosList = snapshot.documents.mapNotNull { doc ->
                                 try {
                                     Movimiento(
@@ -568,15 +577,22 @@ class ProductViewModel @Inject constructor(
                                 }
                             }
                             _movimientos.value = movimientosList
+                            Log.d("ProductViewModel", "Movimientos actualizados: ${movimientosList.size}")
                         } else {
                             _movimientos.value = emptyList()
+                            Log.d("ProductViewModel", "No hay movimientos para el producto")
                         }
                     } catch (e: Exception) {
                         Log.e("ProductViewModel", "Error al procesar movimientos", e)
+                        _movimientos.value = emptyList()
                     }
                 }
+
+            Log.d("ProductViewModel", "Listener configurado para producto: $productId")
+
         } catch (e: Exception) {
             Log.e("ProductViewModel", "Error al configurar listener de movimientos", e)
+            _movimientos.value = emptyList()
         }
     }
 
@@ -630,8 +646,27 @@ class ProductViewModel @Inject constructor(
         _error.value = null
     }
 
+    // Funcion resetear estados para evitar states obsoletos
+    fun resetStates() {
+        try {
+            _isLoading.value = false
+            _isLoadingMore.value = false
+            _error.value = null
+            clearMovimientosListener()
+            Log.d("ProductViewModel", "Estados reseteados")
+        } catch (e: Exception) {
+            Log.e("ProductViewModel", "Error al resetear estados", e)
+        }
+    }
+
+    // Limpiar todos los recursos al destruir el ViewModel
     override fun onCleared() {
         super.onCleared()
-        movimientosListener?.remove()
+        try {
+            clearMovimientosListener()
+            Log.d("ProductViewModel", "ViewModel limpiado correctamente")
+        } catch (e: Exception) {
+            Log.e("ProductViewModel", "Error al limpiar ViewModel", e)
+        }
     }
 }

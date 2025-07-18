@@ -1,9 +1,19 @@
 package com.jhone.app_inventory.ui.navigation
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -35,6 +45,7 @@ fun AppNavigation() {
                 navController = navController
             )
         }
+
         composable("login") {
             LoginScreen(
                 viewModel = authViewModel,
@@ -46,6 +57,7 @@ fun AppNavigation() {
                 onGoToRegister = { navController.navigate("register") }
             )
         }
+
         composable("register") {
             RegisterScreen(
                 viewModel = authViewModel,
@@ -58,6 +70,7 @@ fun AppNavigation() {
                 onGoToLogin = { navController.navigate("login") }
             )
         }
+
         composable("productList") {
             ProductListScreen(
                 navController = navController,
@@ -74,6 +87,7 @@ fun AppNavigation() {
                 currentUserEmail = authViewModel.getCurrentUserEmail() // Pasar email actual
             )
         }
+
         composable("addProduct") {
             AddProductScreen(
                 userRole = authViewModel.userRole ?: "asesor",
@@ -81,6 +95,7 @@ fun AppNavigation() {
                 onProductAdded = { navController.popBackStack() }
             )
         }
+
         composable("editProductScreen/{productId}") { backStackEntry ->
             val productId = backStackEntry.arguments?.getString("productId")
             // Obtén el ProductViewModel y la lista de productos
@@ -98,45 +113,127 @@ fun AppNavigation() {
                     viewModel = productViewModel
                 )
             } else {
-                Text("Producto no encontrado")
+                // Pantalla de error más eficiente
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text("Producto no encontrado")
+                        Button(
+                            onClick = { navController.popBackStack() }
+                        ) {
+                            Text("Volver")
+                        }
+                    }
+                }
             }
         }
+
         composable("stockMovementScreen/{productId}") { backStackEntry ->
             val productId = backStackEntry.arguments?.getString("productId")
+
             val productViewModel: ProductViewModel = hiltViewModel()
-            // Observamos la lista de productos
+
+            // Resetear estados al entrar
+            LaunchedEffect(productId) {
+                productViewModel.resetStates()
+            }
+
+            // Limpiar al salir de la pantalla
+            DisposableEffect(productId) {
+                onDispose {
+                    productViewModel.clearMovimientosListener()
+                }
+            }
+
             val productsState by productViewModel.products.collectAsState()
-            // Extraemos la lista real
             val products = productsState
-            // Buscamos el producto
             val product = products.firstOrNull { it.id == productId }
+
             if (product != null) {
                 StockMovementScreen(
                     product = product,
-                    onCancel = { navController.popBackStack() },
-                    onMovementAdded = { navController.popBackStack() },
+                    onCancel = {
+                        // Limpiar antes de navegar
+                        productViewModel.clearMovimientosListener()
+                        navController.popBackStack()
+                    },
+                    onMovementAdded = {
+                        // Limpiar antes de navegar
+                        productViewModel.clearMovimientosListener()
+                        navController.popBackStack()
+                    },
                     viewModel = productViewModel
                 )
             } else {
-                Text("Producto no encontrado")
+                // Pantalla de error más eficiente
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text("Producto no encontrado")
+                        Button(
+                            onClick = { navController.popBackStack() }
+                        ) {
+                            Text("Volver")
+                        }
+                    }
+                }
             }
         }
+
         composable("stockHistoryScreen/{productId}") { backStackEntry ->
             val productId = backStackEntry.arguments?.getString("productId")
             val productViewModel: ProductViewModel = hiltViewModel()
+
+            // Limpiar al salir
+            DisposableEffect(productId) {
+                onDispose {
+                    productViewModel.clearMovimientosListener()
+                }
+            }
+
             val productsState by productViewModel.products.collectAsState()
             val products = productsState
             val product = products.firstOrNull { it.id == productId }
+
             if (product != null) {
                 StockHistoryScreen(
                     product = product,
-                    onBack = { navController.popBackStack() },
+                    onBack = {
+                        productViewModel.clearMovimientosListener()
+                        navController.popBackStack()
+                    },
                     viewModel = productViewModel
                 )
             } else {
-                Text("Producto no encontrado")
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text("Producto no encontrado")
+                        Button(
+                            onClick = { navController.popBackStack() }
+                        ) {
+                            Text("Volver")
+                        }
+                    }
+                }
             }
         }
+
         composable("main") {
             MainScreen(
                 navController = navController,
@@ -147,6 +244,5 @@ fun AppNavigation() {
                 }
             )
         }
-        // ... Resto de pantallas
     }
 }

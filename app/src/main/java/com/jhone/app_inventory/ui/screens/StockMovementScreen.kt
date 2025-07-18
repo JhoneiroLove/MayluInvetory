@@ -18,8 +18,9 @@ import com.jhone.app_inventory.data.Product
 import com.jhone.app_inventory.ui.viewmodel.ProductViewModel
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun StockMovementScreen(
@@ -28,8 +29,17 @@ fun StockMovementScreen(
     onMovementAdded: () -> Unit,
     viewModel: ProductViewModel = hiltViewModel()
 ) {
-    // Estados observados del ViewModel
-    val isLoading by viewModel.isLoading.collectAsState()
+    // Estados locales en lugar de observar constantemente el ViewModel
+    var isLocalLoading by remember { mutableStateOf(false) }
+    var localProduct by remember { mutableStateOf(product) }
+
+    // Limpiar listeners al salir de la pantalla
+    DisposableEffect(Unit) {
+        onDispose {
+            // Limpiar cualquier listener activo cuando se destruya la pantalla
+            viewModel.clearMovimientosListener()
+        }
+    }
 
     val primaryColor = Color(0xFF9C84C9)
     val cardBackgroundColor = Color.White
@@ -52,12 +62,40 @@ fun StockMovementScreen(
     var observation by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    // Función local para manejar el movimiento
+    val handleMovement = remember {
+        { movimiento: Movimiento ->
+            isLocalLoading = true
+            errorMessage = null
+
+            viewModel.addMovimiento(movimiento) { success, error ->
+                isLocalLoading = false
+                if (success) {
+                    // Actualizar producto local inmediatamente
+                    val newQuantity = if (movimiento.tipo == "ingreso") {
+                        localProduct.cantidad + movimiento.cantidad
+                    } else {
+                        localProduct.cantidad - movimiento.cantidad
+                    }
+                    localProduct = localProduct.copy(cantidad = newQuantity)
+
+                    // Pequeño delay para mejor UX y luego cerrar
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                        delay(300)
+                        onMovementAdded()
+                    }
+                } else {
+                    errorMessage = error ?: "Error desconocido al procesar el movimiento"
+                }
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(primaryColor)  // Fondo de la pantalla con color principal
+            .background(primaryColor)
     ) {
-        // Tarjeta centrada sobre el fondo
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -82,9 +120,10 @@ fun StockMovementScreen(
                     ),
                     textAlign = TextAlign.Center
                 )
+
                 // Subtítulo: nombre o descripción del producto
                 Text(
-                    text = product.descripcion,
+                    text = localProduct.descripcion,
                     style = MaterialTheme.typography.bodyMedium.copy(
                         color = Color.Black,
                         fontWeight = FontWeight.SemiBold
@@ -92,9 +131,9 @@ fun StockMovementScreen(
                     textAlign = TextAlign.Center
                 )
 
-                // Mostrar stock actual
+                // Mostrar stock actual basado en estado local
                 Text(
-                    text = "Stock actual: ${product.cantidad}",
+                    text = "Stock actual: ${localProduct.cantidad}",
                     style = MaterialTheme.typography.bodyLarge.copy(
                         color = primaryColor,
                         fontWeight = FontWeight.Bold
@@ -129,12 +168,12 @@ fun StockMovementScreen(
 
                     Button(
                         onClick = {
-                            if (!isLoading) {
+                            if (!isLocalLoading) {
                                 movementType = "ingreso"
                                 errorMessage = null
                             }
                         },
-                        enabled = !isLoading,
+                        enabled = !isLocalLoading,
                         colors = if (movementType == "ingreso") selectedButtonColors else unselectedButtonColors,
                         shape = RoundedCornerShape(24.dp)
                     ) {
@@ -142,12 +181,12 @@ fun StockMovementScreen(
                     }
                     Button(
                         onClick = {
-                            if (!isLoading) {
+                            if (!isLocalLoading) {
                                 movementType = "salida"
                                 errorMessage = null
                             }
                         },
-                        enabled = !isLoading,
+                        enabled = !isLocalLoading,
                         colors = if (movementType == "salida") selectedButtonColors else unselectedButtonColors,
                         shape = RoundedCornerShape(24.dp)
                     ) {
@@ -166,7 +205,7 @@ fun StockMovementScreen(
                     modifier = Modifier.fillMaxWidth(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     colors = fieldColors,
-                    enabled = !isLoading,
+                    enabled = !isLocalLoading,
                     textStyle = LocalTextStyle.current.copy(color = Color.Black)
                 )
 
@@ -177,7 +216,7 @@ fun StockMovementScreen(
                     label = { Text("Observaciones", color = Color.Black) },
                     modifier = Modifier.fillMaxWidth(),
                     colors = fieldColors,
-                    enabled = !isLoading,
+                    enabled = !isLocalLoading,
                     textStyle = LocalTextStyle.current.copy(color = Color.Black)
                 )
 
@@ -187,14 +226,19 @@ fun StockMovementScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     OutlinedButton(
-                        onClick = onCancel,
-                        enabled = !isLoading,
+                        onClick = {
+                            if (!isLocalLoading) {
+                                onCancel()
+                            }
+                        },
+                        enabled = !isLocalLoading,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(24.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = primaryColor)
                     ) {
                         Text("Cancelar")
                     }
+
                     Button(
                         onClick = {
                             // Validaciones
@@ -208,15 +252,14 @@ fun StockMovementScreen(
                                     errorMessage = "La cantidad debe ser mayor a cero"
                                     return@Button
                                 }
-                                movementType == "salida" && quantity > product.cantidad -> {
-                                    errorMessage = "No hay suficiente stock. Stock actual: ${product.cantidad}"
+                                movementType == "salida" && quantity > localProduct.cantidad -> {
+                                    errorMessage = "No hay suficiente stock. Stock actual: ${localProduct.cantidad}"
                                     return@Button
                                 }
                             }
 
-                            errorMessage = null
                             val movimiento = Movimiento(
-                                loteId = product.id,
+                                loteId = localProduct.id,
                                 tipo = movementType,
                                 cantidad = quantity,
                                 fecha = Timestamp.now(),
@@ -224,21 +267,15 @@ fun StockMovementScreen(
                                 observacion = observation
                             )
 
-                            // Llamada para registrar el movimiento
-                            viewModel.addMovimiento(movimiento) { success, error ->
-                                if (success) {
-                                    onMovementAdded() // Cierra la interfaz
-                                } else {
-                                    errorMessage = error ?: "Error desconocido al procesar el movimiento"
-                                }
-                            }
+                            // Usar función local
+                            handleMovement(movimiento)
                         },
-                        enabled = !isLoading,
+                        enabled = !isLocalLoading,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(24.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = buttonColor)
                     ) {
-                        if (isLoading) {
+                        if (isLocalLoading) {
                             Row(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
