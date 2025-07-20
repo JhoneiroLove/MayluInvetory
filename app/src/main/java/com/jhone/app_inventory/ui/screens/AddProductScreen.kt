@@ -23,6 +23,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -44,32 +47,50 @@ fun AddProductScreen(
     onProductAdded: () -> Unit,
     viewModel: ProductViewModel = hiltViewModel()
 ) {
-    var proveedor by remember { mutableStateOf("") }
-    var codigo by remember { mutableStateOf("") }
-    var descripcion by remember { mutableStateOf("") }
-    var cantidadText by remember { mutableStateOf("") }
-    var fechaVencimientoText by remember { mutableStateOf("") }
+    // Estados con rememberSaveable para persistir en recomposiciones
+    var proveedor by rememberSaveable { mutableStateOf("") }
+    var codigo by rememberSaveable { mutableStateOf("") }
+    var descripcion by rememberSaveable { mutableStateOf("") }
+    var cantidadText by rememberSaveable { mutableStateOf("") }
+    var fechaVencimientoText by rememberSaveable { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    // Estados observados del ViewModel
+    // Estados observados del ViewModel (solo cuando sea necesario)
     val isLoading by viewModel.isLoading.collectAsState()
 
-    // El asesor no puede ingresar precio boleta ni porcentaje
-    val isAdmin = (userRole == "admin")
+    // Calcular isAdmin una sola vez
+    val isAdmin = remember(userRole) { userRole == "admin" }
 
-    // Usuario ingresa el precio boleta manualmente
-    var precioBoletaText by remember { mutableStateOf(if (isAdmin) "" else "0") }
-    // Usuario ingresa el porcentaje manualmente
-    var porcentajeText by remember { mutableStateOf(if (isAdmin) "" else "0") }
+    // OPTIMIZACIÓN 4: Estados de precio con valores por defecto optimizados
+    var precioBoletaText by rememberSaveable {
+        mutableStateOf(if (isAdmin) "" else "0")
+    }
+    var porcentajeText by rememberSaveable {
+        mutableStateOf(if (isAdmin) "" else "0")
+    }
 
-    val precioBoleta = if (isAdmin) precioBoletaText.toDoubleOrNull() ?: 0.0 else 0.0
-    val porcentajeValue = if (isAdmin) porcentajeText.toDoubleOrNull() ?: 0.0 else 0.0
-    val precioCosto = precioBoleta * 1.02
-    val precioProducto = precioCosto * (1 + (porcentajeValue / 100))
+    // solo recalcular cuando cambien los inputs
+    val precioBoleta by remember {
+        derivedStateOf {
+            if (isAdmin) precioBoletaText.toDoubleOrNull() ?: 0.0 else 0.0
+        }
+    }
+    val porcentajeValue by remember {
+        derivedStateOf {
+            if (isAdmin) porcentajeText.toDoubleOrNull() ?: 0.0 else 0.0
+        }
+    }
+    val precioCosto by remember {
+        derivedStateOf { precioBoleta * 1.02 }
+    }
+    val precioProducto by remember {
+        derivedStateOf { precioCosto * (1 + (porcentajeValue / 100)) }
+    }
 
+    // ScrollState con remember simple
     val scrollState = rememberScrollState()
 
-    // Colores y estilos
+    // Colores definidos una sola vez
     val primaryColor = Color(0xFF9C84C9)
     val buttonColor = Color(0xFF7851A9)
     val fieldColors = TextFieldDefaults.outlinedTextFieldColors(
@@ -81,6 +102,36 @@ fun AddProductScreen(
         focusedTextColor = Color.Black,
         unfocusedTextColor = Color.Black
     )
+
+    // Función de validación dentro del Composable
+    fun validateAndSubmit(): Boolean {
+        return when {
+            descripcion.isBlank() -> {
+                errorMessage = "La descripción es obligatoria"
+                false
+            }
+            cantidadText.isBlank() || cantidadText.toIntOrNull() == null -> {
+                errorMessage = "La cantidad debe ser un número válido"
+                false
+            }
+            isAdmin && precioBoletaText.isNotBlank() && precioBoletaText.toDoubleOrNull() == null -> {
+                errorMessage = "El precio boleta debe ser un número válido"
+                false
+            }
+            isAdmin && porcentajeText.isNotBlank() && porcentajeText.toDoubleOrNull() == null -> {
+                errorMessage = "El porcentaje debe ser un número válido"
+                false
+            }
+            fechaVencimientoText.isNotBlank() && !DateValidator.isValidDateFormat(fechaVencimientoText) -> {
+                errorMessage = DateValidator.getDateValidationMessage(fechaVencimientoText)
+                false
+            }
+            else -> {
+                errorMessage = null
+                true
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -109,103 +160,61 @@ fun AddProductScreen(
                     style = MaterialTheme.typography.headlineSmall.copy(color = primaryColor)
                 )
 
-                // Mostrar mensaje de error si existe
+                // Error message como composable separado para evitar recomposición innecesaria
                 errorMessage?.let { error ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFFFFEBEE)
-                        )
-                    ) {
-                        Text(
-                            text = error,
-                            color = Color.Red,
-                            modifier = Modifier.padding(8.dp),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
+                    ErrorMessage(error = error)
                 }
 
-                OutlinedTextField(
+                // Campos de texto optimizados
+                ProductTextField(
                     value = proveedor,
                     onValueChange = { proveedor = it },
-                    label = { Text("Proveedor", fontSize = MaterialTheme.typography.bodySmall.fontSize) },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = fieldColors,
+                    label = "Proveedor",
+                    fieldColors = fieldColors,
                     enabled = !isLoading
                 )
-                OutlinedTextField(
+
+                ProductTextField(
                     value = codigo,
                     onValueChange = { codigo = it },
-                    label = { Text("Código del Producto", fontSize = MaterialTheme.typography.bodySmall.fontSize) },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = fieldColors,
+                    label = "Código del Producto",
+                    fieldColors = fieldColors,
                     enabled = !isLoading
                 )
-                OutlinedTextField(
+
+                ProductTextField(
                     value = descripcion,
                     onValueChange = { descripcion = it },
-                    label = { Text("Descripción") },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = fieldColors,
+                    label = "Descripción",
+                    fieldColors = fieldColors,
                     enabled = !isLoading
                 )
-                OutlinedTextField(
+
+                ProductTextField(
                     value = cantidadText,
                     onValueChange = { cantidadText = it },
-                    label = { Text("Cantidad") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = fieldColors,
-                    enabled = !isLoading
+                    label = "Cantidad",
+                    fieldColors = fieldColors,
+                    enabled = !isLoading,
+                    keyboardType = KeyboardType.Number
                 )
 
-                // Solo admin puede editar precio boleta y porcentaje
+                // Campos de admin solo si es necesario
                 if (isAdmin) {
-                    OutlinedTextField(
-                        value = precioBoletaText,
-                        onValueChange = { precioBoletaText = it },
-                        label = { Text("Precio Boleta") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = fieldColors,
-                        enabled = !isLoading,
-                        placeholder = { Text("0", color = Color.Gray) }
-                    )
-                    OutlinedTextField(
-                        value = porcentajeText,
-                        onValueChange = { porcentajeText = it },
-                        label = { Text("Porcentaje (%)") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = fieldColors,
-                        enabled = !isLoading,
-                        placeholder = { Text("0", color = Color.Gray) }
+                    AdminPriceFields(
+                        precioBoletaText = precioBoletaText,
+                        onPrecioBoletaChange = { precioBoletaText = it },
+                        porcentajeText = porcentajeText,
+                        onPorcentajeChange = { porcentajeText = it },
+                        precioCosto = precioCosto,
+                        precioProducto = precioProducto,
+                        fieldColors = fieldColors,
+                        enabled = !isLoading
                     )
                 }
 
-                // Ocultar campos de Precio Costo y Precio Público para asesores
-                if (isAdmin) {
-                    OutlinedTextField(
-                        value = String.format("%.2f", precioCosto),
-                        onValueChange = {},
-                        label = { Text("Precio Costo") },
-                        modifier = Modifier.fillMaxWidth(),
-                        readOnly = true,
-                        colors = fieldColors
-                    )
-                    OutlinedTextField(
-                        value = String.format("%.2f", precioProducto),
-                        onValueChange = {},
-                        label = { Text("Precio Público") },
-                        modifier = Modifier.fillMaxWidth(),
-                        readOnly = true,
-                        colors = fieldColors
-                    )
-                }
-
-                // DatePicker Field para Fecha de Vencimiento
-                DatePickerField(
+                // DatePicker como composable separado
+                OptimizedDatePicker(
                     value = fechaVencimientoText,
                     onValueChange = {
                         fechaVencimientoText = it
@@ -214,95 +223,200 @@ fun AddProductScreen(
                             errorMessage = null
                         }
                     },
-                    label = "Fecha de Vencimiento",
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isLoading,
-                    isRequired = false,
-                    colors = fieldColors
+                    fieldColors = fieldColors,
+                    enabled = !isLoading
                 )
 
-                Button(
-                    onClick = {
-                        // Validaciones básicas - SOLO descripción y cantidad obligatorios
-                        when {
-                            descripcion.isBlank() -> {
-                                errorMessage = "La descripción es obligatoria"
-                                return@Button
-                            }
-                            cantidadText.isBlank() || cantidadText.toIntOrNull() == null -> {
-                                errorMessage = "La cantidad debe ser un número válido"
-                                return@Button
-                            }
-                            isAdmin && precioBoletaText.isNotBlank() && precioBoletaText.toDoubleOrNull() == null -> {
-                                errorMessage = "El precio boleta debe ser un número válido"
-                                return@Button
-                            }
-                            isAdmin && porcentajeText.isNotBlank() && porcentajeText.toDoubleOrNull() == null -> {
-                                errorMessage = "El porcentaje debe ser un número válido"
-                                return@Button
-                            }
-                            // Validación de fecha
-                            fechaVencimientoText.isNotBlank() && !DateValidator.isValidDateFormat(fechaVencimientoText) -> {
-                                errorMessage = DateValidator.getDateValidationMessage(fechaVencimientoText)
-                                return@Button
-                            }
-                        }
+                // Botones optimizados
+                ActionButtons(
+                    isLoading = isLoading,
+                    buttonColor = buttonColor,
+                    primaryColor = primaryColor,
+                    onSave = {
+                        if (validateAndSubmit()) {
+                            val cantidad = cantidadText.toIntOrNull() ?: 0
+                            val parsedFechaVenc = DateUtils.parseDate(fechaVencimientoText)
 
-                        errorMessage = null
-                        val cantidad = cantidadText.toIntOrNull() ?: 0
-                        val parsedFechaVenc = DateUtils.parseDate(fechaVencimientoText)
+                            val product = Product(
+                                codigo = codigo,
+                                descripcion = descripcion,
+                                cantidad = cantidad,
+                                precioBoleta = precioBoleta,
+                                precioCosto = precioCosto,
+                                precioProducto = precioProducto,
+                                proveedor = proveedor,
+                                fechaVencimiento = parsedFechaVenc,
+                                porcentaje = porcentajeValue
+                            )
 
-                        val product = Product(
-                            codigo = codigo,
-                            descripcion = descripcion,
-                            cantidad = cantidad,
-                            precioBoleta = precioBoleta,
-                            precioCosto = precioCosto,
-                            precioProducto = precioProducto,
-                            proveedor = proveedor,
-                            fechaVencimiento = parsedFechaVenc,
-                            porcentaje = porcentajeValue
-                        )
-
-                        viewModel.addProduct(product) { success, error ->
-                            if (success) {
-                                onProductAdded()
-                            } else {
-                                errorMessage = error ?: "Error desconocido al agregar producto"
+                            viewModel.addProduct(product) { success, error ->
+                                if (success) {
+                                    onProductAdded()
+                                } else {
+                                    errorMessage = error ?: "Error desconocido al agregar producto"
+                                }
                             }
                         }
                     },
-                    enabled = !isLoading,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    if (isLoading) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                color = Color.White
-                            )
-                            Text(text = "Guardando...", color = Color.White)
-                        }
-                    } else {
-                        Text(text = "Guardar", color = Color.White)
-                    }
-                }
-
-                OutlinedButton(
-                    onClick = onCancel,
-                    enabled = !isLoading,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = primaryColor)
-                ) {
-                    Text("Cancelar")
-                }
+                    onCancel = onCancel
+                )
             }
         }
+    }
+}
+
+// Composables auxiliares para reducir recomposiciones
+@Composable
+private fun ErrorMessage(error: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFFFFEBEE)
+        )
+    ) {
+        Text(
+            text = error,
+            color = Color.Red,
+            modifier = Modifier.padding(8.dp),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProductTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    fieldColors: androidx.compose.material3.TextFieldColors,
+    enabled: Boolean,
+    keyboardType: KeyboardType = KeyboardType.Text
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label, fontSize = MaterialTheme.typography.bodySmall.fontSize) },
+        modifier = Modifier.fillMaxWidth(),
+        colors = fieldColors,
+        enabled = enabled,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        singleLine = true
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AdminPriceFields(
+    precioBoletaText: String,
+    onPrecioBoletaChange: (String) -> Unit,
+    porcentajeText: String,
+    onPorcentajeChange: (String) -> Unit,
+    precioCosto: Double,
+    precioProducto: Double,
+    fieldColors: androidx.compose.material3.TextFieldColors,
+    enabled: Boolean
+) {
+    OutlinedTextField(
+        value = precioBoletaText,
+        onValueChange = onPrecioBoletaChange,
+        label = { Text("Precio Boleta") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.fillMaxWidth(),
+        colors = fieldColors,
+        enabled = enabled,
+        placeholder = { Text("0", color = Color.Gray) },
+        singleLine = true
+    )
+
+    OutlinedTextField(
+        value = porcentajeText,
+        onValueChange = onPorcentajeChange,
+        label = { Text("Porcentaje (%)") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.fillMaxWidth(),
+        colors = fieldColors,
+        enabled = enabled,
+        placeholder = { Text("0", color = Color.Gray) },
+        singleLine = true
+    )
+
+    OutlinedTextField(
+        value = String.format("%.2f", precioCosto),
+        onValueChange = {},
+        label = { Text("Precio Costo") },
+        modifier = Modifier.fillMaxWidth(),
+        readOnly = true,
+        colors = fieldColors
+    )
+
+    OutlinedTextField(
+        value = String.format("%.2f", precioProducto),
+        onValueChange = {},
+        label = { Text("Precio Público") },
+        modifier = Modifier.fillMaxWidth(),
+        readOnly = true,
+        colors = fieldColors
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OptimizedDatePicker(
+    value: String,
+    onValueChange: (String) -> Unit,
+    fieldColors: androidx.compose.material3.TextFieldColors,
+    enabled: Boolean
+) {
+    DatePickerField(
+        value = value,
+        onValueChange = onValueChange,
+        label = "Fecha de Vencimiento",
+        modifier = Modifier.fillMaxWidth(),
+        enabled = enabled,
+        isRequired = false,
+        colors = fieldColors
+    )
+}
+
+@Composable
+private fun ActionButtons(
+    isLoading: Boolean,
+    buttonColor: Color,
+    primaryColor: Color,
+    onSave: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Button(
+        onClick = onSave,
+        enabled = !isLoading,
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        if (isLoading) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = Color.White
+                )
+                Text(text = "Guardando...", color = Color.White)
+            }
+        } else {
+            Text(text = "Guardar", color = Color.White)
+        }
+    }
+
+    OutlinedButton(
+        onClick = onCancel,
+        enabled = !isLoading,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = primaryColor)
+    ) {
+        Text("Cancelar")
     }
 }
