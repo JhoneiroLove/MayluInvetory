@@ -35,20 +35,39 @@ fun DatePickerField(
     // Colores del sistema
     val primaryColor = Color(0xFF9C84C9)
 
-    // Función para formatear fecha
+    // Función para formatear fecha CORREGIDA para zona horaria
     val formatDate = { timestamp: Long ->
         val date = Date(timestamp)
         val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
-        formatter.format(date)
+        // Ajustar para zona horaria local
+        val calendar = Calendar.getInstance()
+        calendar.timeInMillis = timestamp
+        formatter.format(calendar.time)
     }
 
-    // Función para parsear fecha desde el texto actual
+    // Función mejorada para parsear fecha
     val parseCurrentDate = {
         try {
             if (value.isNotBlank()) {
-                val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
-                val date = formatter.parse(value)
-                date?.time
+                val cleanedValue = DateValidator.normalizeDate(value)
+                if (cleanedValue != null) {
+                    // Parsear directamente sin conversión de zona horaria
+                    val parts = cleanedValue.split("/")
+                    if (parts.size == 3) {
+                        val day = parts[0].toInt()
+                        val month = parts[1].toInt() - 1 // Calendar.MONTH es 0-based
+                        val year = parts[2].toInt()
+
+                        val utcCalendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+                        utcCalendar.set(year, month, day, 0, 0, 0)
+                        utcCalendar.set(Calendar.MILLISECOND, 0)
+                        utcCalendar.timeInMillis
+                    } else {
+                        null
+                    }
+                } else {
+                    null
+                }
             } else {
                 null
             }
@@ -80,7 +99,7 @@ fun DatePickerField(
             modifier = Modifier.fillMaxWidth(),
             colors = colors,
             enabled = enabled,
-            placeholder = { Text("dd/MM/yyyy", color = Color.Gray) },
+            placeholder = { Text("d/M/yyyy o dd/MM/yyyy", color = Color.Gray) },
             trailingIcon = {
                 IconButton(
                     onClick = {
@@ -99,7 +118,7 @@ fun DatePickerField(
             },
             supportingText = {
                 Text(
-                    text = if (isRequired) "Campo obligatorio" else "Formato: dd/MM/yyyy (Opcional)",
+                    text = if (isRequired) "Campo obligatorio" else "Formato: dd/MM/yyyy",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (isRequired) Color.Red else Color(0xFF666666)
                 )
@@ -107,12 +126,21 @@ fun DatePickerField(
         )
     }
 
-    // DatePicker Dialog Corregido
+    // DatePicker Dialog
     if (showDatePicker) {
         CustomDatePickerDialog(
             onDateSelected = { selectedDateMillis ->
                 selectedDateMillis?.let { timestamp ->
-                    val formattedDate = formatDate(timestamp)
+                    // Extraer día, mes, año directamente
+                    val utcCalendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+                    utcCalendar.timeInMillis = timestamp
+
+                    val day = utcCalendar.get(Calendar.DAY_OF_MONTH)
+                    val month = utcCalendar.get(Calendar.MONTH) + 1 // Calendar.MONTH es 0-based
+                    val year = utcCalendar.get(Calendar.YEAR)
+
+                    // Formatear directamente sin conversión de zona horaria
+                    val formattedDate = String.format("%02d/%02d/%04d", day, month, year)
                     onValueChange(formattedDate)
                 }
                 showDatePicker = false
@@ -171,18 +199,13 @@ fun CustomDatePickerDialog(
                     showModeToggle = true,
                     colors = DatePickerDefaults.colors(
                         containerColor = Color.White,
-                        // CORREGIDO: Texto del título y mes en color oscuro
                         titleContentColor = Color(0xFF333333),
                         headlineContentColor = Color(0xFF333333),
-                        // CORREGIDO: Días de la semana en color oscuro
                         weekdayContentColor = Color(0xFF333333),
-                        // CORREGIDO: Subtítulos en color oscuro
                         subheadContentColor = Color(0xFF333333),
-                        // Años
                         yearContentColor = Color(0xFF333333),
                         currentYearContentColor = Color.White,
                         selectedYearContainerColor = buttonColor,
-                        // Días del calendario
                         dayContentColor = Color(0xFF333333),
                         selectedDayContentColor = Color.White,
                         selectedDayContainerColor = buttonColor,
@@ -190,15 +213,25 @@ fun CustomDatePickerDialog(
                         todayDateBorderColor = primaryColor,
                         dayInSelectionRangeContentColor = Color.White,
                         dayInSelectionRangeContainerColor = primaryColor.copy(alpha = 0.3f),
-                        // CORREGIDO: Navegación del mes en color oscuro
                         navigationContentColor = Color(0xFF333333)
                     )
                 )
 
                 // Vista previa de fecha seleccionada
                 datePickerState.selectedDateMillis?.let { timestamp ->
-                    val selectedDate = Date(timestamp)
-                    val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
+                    // Extraer fecha directamente en UTC sin conversión
+                    val utcCalendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+                    utcCalendar.timeInMillis = timestamp
+
+                    val day = utcCalendar.get(Calendar.DAY_OF_MONTH)
+                    val month = utcCalendar.get(Calendar.MONTH) + 1
+                    val year = utcCalendar.get(Calendar.YEAR)
+
+                    val formattedDate = String.format("%02d/%02d/%04d", day, month, year)
+
+                    // Para mostrar el día de la semana, usar la fecha formateada
+                    val displayCalendar = Calendar.getInstance()
+                    displayCalendar.set(year, month - 1, day) // Los meses en Calendar son 0-based
                     val dayFormatter = SimpleDateFormat("EEEE", Locale.getDefault())
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -225,7 +258,7 @@ fun CustomDatePickerDialog(
                             Spacer(modifier = Modifier.height(8.dp))
 
                             Text(
-                                text = formatter.format(selectedDate),
+                                text = formattedDate,
                                 style = MaterialTheme.typography.headlineSmall.copy(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 20.sp
@@ -234,7 +267,7 @@ fun CustomDatePickerDialog(
                             )
 
                             Text(
-                                text = dayFormatter.format(selectedDate).replaceFirstChar { it.uppercase() },
+                                text = dayFormatter.format(displayCalendar.time).replaceFirstChar { it.uppercase() },
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = primaryColor
                             )
@@ -246,7 +279,6 @@ fun CustomDatePickerDialog(
             }
         },
         confirmButton = {
-            // CORREGIDO: Botones horizontales que no colapsan
             Column(
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -328,31 +360,74 @@ fun CustomDatePickerDialog(
     )
 }
 
-// Utilidad para validar formato de fecha (sin cambios)
+// Utilidad mejorada para validar formato de fecha
 object DateValidator {
+
+    /**
+     * Normaliza una fecha a formato dd/MM/yyyy
+     */
+    fun normalizeDate(dateString: String): String? {
+        if (dateString.isBlank()) return null
+
+        try {
+            // Limpiar espacios y caracteres extraños
+            val cleaned = dateString.trim().replace("\\s+".toRegex(), "")
+
+            // Dividir por "/"
+            val parts = cleaned.split("/")
+            if (parts.size != 3) return null
+
+            val day = parts[0].toIntOrNull() ?: return null
+            val month = parts[1].toIntOrNull() ?: return null
+            val yearInput = parts[2].toIntOrNull() ?: return null
+
+            // Validar rangos básicos
+            if (day < 1 || day > 31) return null
+            if (month < 1 || month > 12) return null
+
+            // Manejar años de 2 dígitos
+            val year = when {
+                yearInput < 50 -> 2000 + yearInput  // 00-49 -> 2000-2049
+                yearInput < 100 -> 1900 + yearInput // 50-99 -> 1950-1999
+                else -> yearInput
+            }
+
+            // Validar año razonable
+            if (year < 1900 || year > 2100) return null
+
+            // Formatear con ceros a la izquierda
+            return String.format("%02d/%02d/%04d", day, month, year)
+
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
+    /**
+     * Valida si un string de fecha es válido después de normalizarlo
+     */
     fun isValidDateFormat(dateString: String): Boolean {
         if (dateString.isBlank()) return true // Opcional
+
+        val normalized = normalizeDate(dateString) ?: return false
 
         return try {
             val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
             formatter.isLenient = false
-            formatter.parse(dateString)
-
-            // Verificar que tenga el formato exacto
-            val parts = dateString.split("/")
-            parts.size == 3 &&
-                    parts[0].length == 2 &&
-                    parts[1].length == 2 &&
-                    parts[2].length == 4
+            formatter.parse(normalized)
+            true
         } catch (e: Exception) {
             false
         }
     }
 
+    /**
+     * Obtiene mensaje de validación de fecha
+     */
     fun getDateValidationMessage(dateString: String): String? {
         return when {
             dateString.isBlank() -> null // Es opcional
-            !isValidDateFormat(dateString) -> "Formato de fecha inválido. Use dd/MM/yyyy"
+            !isValidDateFormat(dateString) -> "Formato de fecha inválido. Use d/M/yyyy"
             else -> null
         }
     }

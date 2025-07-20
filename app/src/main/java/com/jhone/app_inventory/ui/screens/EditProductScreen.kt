@@ -176,7 +176,8 @@ fun EditProductScreen(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth(),
                         colors = fieldColors,
-                        enabled = !isLoading
+                        enabled = !isLoading,
+                        placeholder = { Text("0", color = Color.Gray) }
                     )
                     OutlinedTextField(
                         value = porcentajeText,
@@ -188,7 +189,8 @@ fun EditProductScreen(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth(),
                         colors = fieldColors,
-                        enabled = !isLoading
+                        enabled = !isLoading,
+                        placeholder = { Text("0", color = Color.Gray) }
                     )
                 }
                 // Ocultamos Precio Costo y Precio Público para asesores
@@ -232,16 +234,8 @@ fun EditProductScreen(
 
                 Button(
                     onClick = {
-                        // Validaciones básicas
+                        // Validaciones básicas - SOLO descripción y cantidad obligatorios
                         when {
-                            proveedor.isBlank() -> {
-                                errorMessage = "El proveedor es obligatorio"
-                                return@Button
-                            }
-                            codigo.isBlank() -> {
-                                errorMessage = "El código es obligatorio"
-                                return@Button
-                            }
                             descripcion.isBlank() -> {
                                 errorMessage = "La descripción es obligatoria"
                                 return@Button
@@ -250,11 +244,11 @@ fun EditProductScreen(
                                 errorMessage = "La cantidad debe ser un número válido"
                                 return@Button
                             }
-                            isAdmin && (precioBoletaText.isBlank() || precioBoletaText.toDoubleOrNull() == null) -> {
+                            isAdmin && precioBoletaText.isNotBlank() && precioBoletaText.toDoubleOrNull() == null -> {
                                 errorMessage = "El precio boleta debe ser un número válido"
                                 return@Button
                             }
-                            isAdmin && (porcentajeText.isBlank() || porcentajeText.toDoubleOrNull() == null) -> {
+                            isAdmin && porcentajeText.isNotBlank() && porcentajeText.toDoubleOrNull() == null -> {
                                 errorMessage = "El porcentaje debe ser un número válido"
                                 return@Button
                             }
