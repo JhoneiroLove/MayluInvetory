@@ -37,23 +37,96 @@ class ProductRepository @Inject constructor(
                 productDao.getProductsPaginated(50, 0).map { it.toProduct() }
             } else {
                 val cleanQuery = query.trim()
-                val searchResults = productDao.searchProducts(cleanQuery)
-                val products = searchResults.map { it.toProduct() }
 
-                // Ordenar por relevancia
-                products.sortedWith(compareBy<Product> { product ->
-                    when {
-                        product.codigo.startsWith(cleanQuery, ignoreCase = true) -> 1
-                        product.descripcion.startsWith(cleanQuery, ignoreCase = true) -> 2
-                        product.codigo.contains(cleanQuery, ignoreCase = true) -> 3
-                        product.descripcion.contains(cleanQuery, ignoreCase = true) -> 4
-                        product.proveedor.contains(cleanQuery, ignoreCase = true) -> 5
-                        else -> 6
+                // Intentar búsqueda directa optimizada
+                val directResults = productDao.searchProducts(cleanQuery)
+
+                // Si no hay resultados o pocos, intentar búsqueda por palabras
+                val finalResults = if (directResults.size < 3) {
+                    val wordResults = searchByMultipleWords(cleanQuery)
+                    if (wordResults.isNotEmpty()) {
+                        // Combinar resultados sin duplicados
+                        val combined = (directResults + wordResults).distinctBy { it.id }
+                        combined
+                    } else {
+                        directResults
                     }
+                } else {
+                    directResults
+                }
+
+                val products = finalResults.map { it.toProduct() }
+
+                // Ordenar por relevancia mejorada
+                products.sortedWith(compareBy<Product> { product ->
+                    calculateRelevanceScore(product, cleanQuery)
                 }.thenBy { it.codigo })
             }
         } catch (e: Exception) {
             emptyList()
+        }
+    }
+
+    // Búsqueda por múltiples palabras
+    private suspend fun searchByMultipleWords(query: String): List<com.jhone.app_inventory.data.local.ProductEntity> {
+        val words = query.lowercase().split(" ").filter { it.isNotBlank() }
+
+        return when (words.size) {
+            1 -> productDao.searchProductsSimple(words[0])
+            2 -> productDao.searchProductsByWords(words[0], words[1])
+            3 -> productDao.searchProductsByWords(words[0], words[1], words[2])
+            4 -> productDao.searchProductsByWords(words[0], words[1], words[2], words[3])
+            else -> productDao.searchProductsByWords(
+                words.getOrNull(0) ?: "",
+                words.getOrNull(1) ?: "",
+                words.getOrNull(2) ?: "",
+                words.getOrNull(3) ?: "",
+                words.getOrNull(4) ?: ""
+            )
+        }
+    }
+
+    // Función para calcular puntuación de relevancia
+    private fun calculateRelevanceScore(product: Product, query: String): Int {
+        val queryLower = query.lowercase()
+        val queryWords = queryLower.split(" ").filter { it.isNotBlank() }
+        val codigoLower = product.codigo.lowercase()
+        val descripcionLower = product.descripcion.lowercase()
+        val proveedorLower = product.proveedor.lowercase()
+        val allText = "$codigoLower $descripcionLower $proveedorLower"
+
+        return when {
+            // Coincidencia exacta en código
+            codigoLower == queryLower -> 1
+
+            // Código empieza con la consulta
+            codigoLower.startsWith(queryLower) -> 2
+
+            // Descripción empieza con la consulta
+            descripcionLower.startsWith(queryLower) -> 3
+
+            // Código contiene la consulta
+            codigoLower.contains(queryLower) -> 4
+
+            // Todas las palabras están en la descripción
+            queryWords.all { word -> descripcionLower.contains(word) } -> 5
+
+            // Descripción contiene la consulta completa
+            descripcionLower.contains(queryLower) -> 6
+
+            // Todas las palabras están en todo el texto
+            queryWords.all { word -> allText.contains(word) } -> 7
+
+            // Proveedor contiene la consulta
+            proveedorLower.contains(queryLower) -> 8
+
+            // Al menos la mitad de las palabras están presentes
+            queryWords.count { word -> allText.contains(word) } >= (queryWords.size / 2.0) -> 9
+
+            // Al menos una palabra está presente
+            queryWords.any { word -> allText.contains(word) } -> 10
+
+            else -> 11
         }
     }
 
@@ -276,41 +349,115 @@ class ProductRepository @Inject constructor(
         return try {
             val cleanQuery = query.trim()
             val searchResults = mutableListOf<Product>()
+            val words = cleanQuery.lowercase().split(" ").filter { it.isNotBlank() }
 
-            // Búsqueda por código
+            // Búsqueda por código exacto
             val codeQuery = firestore.collection("products")
-                .orderBy("codigo")
-                .startAt(cleanQuery.uppercase())
-                .endAt(cleanQuery.uppercase() + "\uf8ff")
-                .limit(10)
+                .whereEqualTo("codigo", cleanQuery.uppercase())
+                .limit(5)
 
             val codeResults = codeQuery.get().await()
             searchResults.addAll(
-                codeResults.documents.mapNotNull { doc ->
-                    try {
-                        Product(
-                            id = doc.id,
-                            codigo = doc.getString("codigo") ?: "",
-                            descripcion = doc.getString("descripcion") ?: "",
-                            cantidad = doc.getLong("cantidad")?.toInt() ?: 0,
-                            precioBoleta = doc.getDouble("precioBoleta") ?: 0.0,
-                            precioCosto = doc.getDouble("precioCosto") ?: 0.0,
-                            precioProducto = doc.getDouble("precioProducto") ?: 0.0,
-                            proveedor = doc.getString("proveedor") ?: "",
-                            createdAt = doc.getTimestamp("timestamp"),
-                            fechaVencimiento = doc.getTimestamp("fechaVencimiento"),
-                            porcentaje = doc.getDouble("porcentaje") ?: 0.0,
-                            createdBy = doc.getString("createdBy") ?: ""
-                        )
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
+                codeResults.documents.mapNotNull { doc -> parseFirebaseProduct(doc) }
             )
 
-            searchResults.take(20)
+            // Búsqueda por código que empiece con la consulta
+            if (searchResults.isEmpty()) {
+                val codeStartQuery = firestore.collection("products")
+                    .orderBy("codigo")
+                    .startAt(cleanQuery.uppercase())
+                    .endAt(cleanQuery.uppercase() + "\uf8ff")
+                    .limit(10)
+
+                val codeStartResults = codeStartQuery.get().await()
+                searchResults.addAll(
+                    codeStartResults.documents.mapNotNull { doc -> parseFirebaseProduct(doc) }
+                )
+            }
+
+            // Búsqueda por descripción
+            if (searchResults.size < 5) {
+                // Buscar por la primera palabra más significativa
+                val mainWord = words.maxByOrNull { it.length } ?: words.firstOrNull()
+                if (mainWord != null && mainWord.length >= 3) {
+                    val descQuery = firestore.collection("products")
+                        .orderBy("descripcion")
+                        .startAt(mainWord.replaceFirstChar { it.uppercase() })
+                        .endAt(mainWord.replaceFirstChar { it.uppercase() } + "\uf8ff")
+                        .limit(15)
+
+                    val descResults = descQuery.get().await()
+                    val filteredDescResults = descResults.documents.mapNotNull { doc ->
+                        val product = parseFirebaseProduct(doc)
+                        // Filtrar solo productos que contengan al menos 2 palabras de la búsqueda
+                        if (product != null) {
+                            val matchCount = words.count { word ->
+                                product.descripcion.contains(word, ignoreCase = true) ||
+                                        product.codigo.contains(word, ignoreCase = true) ||
+                                        product.proveedor.contains(word, ignoreCase = true)
+                            }
+                            if (matchCount >= 2 || words.size == 1) product else null
+                        } else null
+                    }
+
+                    filteredDescResults.forEach { product ->
+                        if (searchResults.none { it.id == product.id }) {
+                            searchResults.add(product)
+                        }
+                    }
+                }
+            }
+
+            // Búsqueda manual en muestra si aún no hay resultados
+            if (searchResults.isEmpty()) {
+                val sampleQuery = firestore.collection("products")
+                    .limit(200) // Aumentar muestra
+
+                val sampleResults = sampleQuery.get().await()
+                val manualMatches = sampleResults.documents.mapNotNull { doc ->
+                    val product = parseFirebaseProduct(doc)
+                    if (product != null) {
+                        val allText = "${product.codigo} ${product.descripcion} ${product.proveedor}".lowercase()
+                        val matchCount = words.count { word -> allText.contains(word) }
+
+                        // Requerir al menos la mitad de las palabras para búsquedas largas
+                        val requiredMatches = if (words.size > 3) (words.size / 2.0).toInt() else 1
+
+                        if (matchCount >= requiredMatches) product else null
+                    } else null
+                }
+
+                searchResults.addAll(manualMatches.take(10))
+            }
+
+            // Ordenar por relevancia
+            searchResults.sortedWith(compareBy<Product> { product ->
+                calculateRelevanceScore(product, cleanQuery)
+            }.thenBy { it.codigo }).take(20)
+
         } catch (e: Exception) {
             emptyList()
+        }
+    }
+
+    private fun parseFirebaseProduct(doc: com.google.firebase.firestore.DocumentSnapshot): Product? {
+        return try {
+            Product(
+                id = doc.id,
+                codigo = doc.getString("codigo") ?: "",
+                descripcion = doc.getString("descripcion") ?: "",
+                cantidad = doc.getLong("cantidad")?.toInt() ?: 0,
+                precioBoleta = doc.getDouble("precioBoleta") ?: 0.0,
+                precioCosto = doc.getDouble("precioCosto") ?: 0.0,
+                precioProducto = doc.getDouble("precioProducto") ?: 0.0,
+                proveedor = doc.getString("proveedor") ?: "",
+                createdAt = doc.getTimestamp("timestamp"),
+                fechaVencimiento = doc.getTimestamp("fechaVencimiento"),
+                porcentaje = doc.getDouble("porcentaje") ?: 0.0,
+                createdBy = doc.getString("createdBy") ?: ""
+            )
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -321,6 +468,15 @@ class ProductRepository @Inject constructor(
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    // AGREGAR PRODUCTO AL CACHÉ
+    suspend fun addProductToCache(product: Product) {
+        try {
+            productDao.insertProduct(product.toEntity())
+        } catch (e: Exception) {
+            // Silenciar errores de caché
         }
     }
 }

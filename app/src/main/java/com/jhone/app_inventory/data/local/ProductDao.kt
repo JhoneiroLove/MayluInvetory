@@ -19,17 +19,54 @@ interface ProductDao {
            OR LOWER(proveedor) LIKE '%' || LOWER(:query) || '%'
         ORDER BY 
             CASE 
-                WHEN LOWER(codigo) LIKE LOWER(:query) || '%' THEN 1
-                WHEN LOWER(descripcion) LIKE LOWER(:query) || '%' THEN 2
-                WHEN LOWER(codigo) LIKE '%' || LOWER(:query) || '%' THEN 3
-                WHEN LOWER(descripcion) LIKE '%' || LOWER(:query) || '%' THEN 4
-                WHEN LOWER(proveedor) LIKE '%' || LOWER(:query) || '%' THEN 5
-                ELSE 6 
+                WHEN LOWER(codigo) = LOWER(:query) THEN 1
+                WHEN LOWER(codigo) LIKE LOWER(:query) || '%' THEN 2
+                WHEN LOWER(descripcion) LIKE LOWER(:query) || '%' THEN 3
+                WHEN LOWER(codigo) LIKE '%' || LOWER(:query) || '%' THEN 4
+                WHEN LOWER(descripcion) LIKE '%' || LOWER(:query) || '%' THEN 5
+                WHEN LOWER(proveedor) LIKE '%' || LOWER(:query) || '%' THEN 6
+                ELSE 7 
             END,
             codigo ASC
         LIMIT 50
     """)
     suspend fun searchProducts(query: String): List<ProductEntity>
+
+    // BÚSQUEDA POR MÚLTIPLES PALABRAS
+    @Query("""
+        SELECT * FROM products 
+        WHERE (:word1 = '' OR LOWER(codigo || ' ' || descripcion || ' ' || proveedor) LIKE '%' || LOWER(:word1) || '%')
+          AND (:word2 = '' OR LOWER(codigo || ' ' || descripcion || ' ' || proveedor) LIKE '%' || LOWER(:word2) || '%')
+          AND (:word3 = '' OR LOWER(codigo || ' ' || descripcion || ' ' || proveedor) LIKE '%' || LOWER(:word3) || '%')
+          AND (:word4 = '' OR LOWER(codigo || ' ' || descripcion || ' ' || proveedor) LIKE '%' || LOWER(:word4) || '%')
+          AND (:word5 = '' OR LOWER(codigo || ' ' || descripcion || ' ' || proveedor) LIKE '%' || LOWER(:word5) || '%')
+        ORDER BY 
+            CASE 
+                WHEN LOWER(codigo) LIKE LOWER(:word1) || '%' THEN 1
+                WHEN LOWER(descripcion) LIKE LOWER(:word1) || '%' THEN 2
+                ELSE 3
+            END,
+            codigo ASC
+        LIMIT 100
+    """)
+    suspend fun searchProductsByWords(
+        word1: String,
+        word2: String = "",
+        word3: String = "",
+        word4: String = "",
+        word5: String = ""
+    ): List<ProductEntity>
+
+    // BÚSQUEDA SIMPLE PARA CONSULTAS LARGAS
+    @Query("""
+        SELECT * FROM products 
+        WHERE LOWER(codigo || ' ' || descripcion || ' ' || proveedor) LIKE '%' || LOWER(:query) || '%'
+        ORDER BY 
+            LENGTH(descripcion) ASC,
+            codigo ASC
+        LIMIT 50
+    """)
+    suspend fun searchProductsSimple(query: String): List<ProductEntity>
 
     @Query("SELECT * FROM products WHERE id = :id")
     suspend fun getProductById(id: String): ProductEntity?
