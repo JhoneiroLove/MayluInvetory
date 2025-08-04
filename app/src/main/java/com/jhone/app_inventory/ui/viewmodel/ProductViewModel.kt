@@ -3,6 +3,7 @@ package com.jhone.app_inventory.ui.viewmodel
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.DocumentSnapshot
@@ -27,6 +28,9 @@ class ProductViewModel @Inject constructor(
 
     private val _products = MutableStateFlow<List<Product>>(emptyList())
     val products: StateFlow<List<Product>> = _products
+
+    private val _product = MutableStateFlow<Product?>(null)
+    val product: StateFlow<Product?> = _product
 
     private val _movimientos = MutableStateFlow<List<Movimiento>>(emptyList())
     val movimientos: StateFlow<List<Movimiento>> = _movimientos
@@ -384,6 +388,15 @@ class ProductViewModel @Inject constructor(
                 val productRef = db.collection("products").document(movimiento.loteId)
                 val movimientoRef = db.collection("movimientos").document()
 
+                val movimientoData = mapOf(
+                    "loteId" to movimiento.loteId,
+                    "tipo" to movimiento.tipo,
+                    "cantidad" to movimiento.cantidad,
+                    "fecha" to movimiento.fecha, // Timestamp se maneja automáticamente
+                    "usuario" to currentUserEmail,
+                    "observacion" to movimiento.observacion
+                )
+
                 // Usar runTransaction de forma más eficiente
                 val result = db.runTransaction { transaction ->
                     val productSnapshot = transaction.get(productRef)
@@ -405,12 +418,8 @@ class ProductViewModel @Inject constructor(
                     // Actualizar producto
                     transaction.update(productRef, "cantidad", newQuantity)
 
-                    // Crear movimiento
-                    val movimientoConUsuarioReal = movimiento.copy(
-                        id = movimientoRef.id,
-                        usuario = currentUserEmail
-                    )
-                    transaction.set(movimientoRef, movimientoConUsuarioReal)
+                    // Crear movimiento usando el Map de datos
+                    transaction.set(movimientoRef, movimientoData)
 
                     // Retornar nueva cantidad para actualización local
                     newQuantity.toInt()
@@ -482,6 +491,8 @@ class ProductViewModel @Inject constructor(
             // Establecer nuevo listener
             currentProductId = productId
 
+            Log.d("ProductViewModel", "Configurando listener para producto: $productId")
+
             movimientosListener = db.collection("movimientos")
                 .whereEqualTo("loteId", productId)
                 .orderBy("fecha", Query.Direction.DESCENDING)
@@ -493,15 +504,26 @@ class ProductViewModel @Inject constructor(
                     }
 
                     try {
-                        if (snapshot != null && !snapshot.isEmpty) {
+                        if (snapshot != null) {
+                            Log.d("ProductViewModel", "Snapshot recibido con ${snapshot.documents.size} documentos")
+
+                            if (snapshot.isEmpty) {
+                                Log.d("ProductViewModel", "No hay movimientos para el producto $productId")
+                                _movimientos.value = emptyList()
+                                return@addSnapshotListener
+                            }
+
                             val movimientosList = snapshot.documents.mapNotNull { doc ->
                                 try {
+                                    Log.d("ProductViewModel", "Procesando documento: ${doc.id}")
+                                    Log.d("ProductViewModel", "Datos del documento: ${doc.data}")
+
                                     Movimiento(
                                         id = doc.id,
                                         loteId = doc.getString("loteId") ?: "",
                                         tipo = doc.getString("tipo") ?: "",
                                         cantidad = doc.getLong("cantidad")?.toInt() ?: 0,
-                                        fecha = doc.getTimestamp("fecha") ?: com.google.firebase.Timestamp.now(),
+                                        fecha = doc.getTimestamp("fecha") ?: Timestamp.now(),
                                         usuario = doc.getString("usuario") ?: "",
                                         observacion = doc.getString("observacion") ?: ""
                                     )
@@ -510,11 +532,13 @@ class ProductViewModel @Inject constructor(
                                     null
                                 }
                             }
+
+                            Log.d("ProductViewModel", "Movimientos parseados: ${movimientosList.size}")
                             _movimientos.value = movimientosList
-                            Log.d("ProductViewModel", "Movimientos actualizados: ${movimientosList.size}")
+
                         } else {
+                            Log.d("ProductViewModel", "Snapshot es null")
                             _movimientos.value = emptyList()
-                            Log.d("ProductViewModel", "No hay movimientos para el producto")
                         }
                     } catch (e: Exception) {
                         Log.e("ProductViewModel", "Error al procesar movimientos", e)

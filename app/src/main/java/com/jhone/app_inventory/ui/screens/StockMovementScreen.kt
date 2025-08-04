@@ -32,6 +32,7 @@ fun StockMovementScreen(
     // Estados locales en lugar de observar constantemente el ViewModel
     var isLocalLoading by remember { mutableStateOf(false) }
     var localProduct by remember { mutableStateOf(product) }
+    val product by viewModel.product.collectAsState()
 
     // Limpiar listeners al salir de la pantalla
     DisposableEffect(Unit) {
@@ -68,18 +69,21 @@ fun StockMovementScreen(
             isLocalLoading = true
             errorMessage = null
 
+            // Actualizar el stock local antes de llamar al ViewModel
+            val newQuantity = if (movimiento.tipo == "ingreso") {
+                localProduct.cantidad + movimiento.cantidad
+            } else {
+                localProduct.cantidad - movimiento.cantidad
+            }
+
+            // Actualiza el producto local inmediatamente antes de hacer el llamado al ViewModel
+            localProduct = localProduct.copy(cantidad = newQuantity)
+
+            // Llamada al ViewModel para agregar el movimiento en Firebase
             viewModel.addMovimiento(movimiento) { success, error ->
                 isLocalLoading = false
                 if (success) {
-                    // Actualizar producto local inmediatamente
-                    val newQuantity = if (movimiento.tipo == "ingreso") {
-                        localProduct.cantidad + movimiento.cantidad
-                    } else {
-                        localProduct.cantidad - movimiento.cantidad
-                    }
-                    localProduct = localProduct.copy(cantidad = newQuantity)
-
-                    // Pequeño delay para mejor UX y luego cerrar
+                    // Solo si el movimiento es exitoso, puedes proceder a cerrar la pantalla
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
                         delay(300)
                         onMovementAdded()
@@ -241,7 +245,6 @@ fun StockMovementScreen(
 
                     Button(
                         onClick = {
-                            // Validaciones
                             val quantity = quantityText.toIntOrNull()
                             when {
                                 quantityText.isBlank() || quantity == null -> {
@@ -258,6 +261,14 @@ fun StockMovementScreen(
                                 }
                             }
 
+                            val newQuantity = if (movementType == "ingreso") {
+                                localProduct.cantidad + quantity
+                            } else {
+                                localProduct.cantidad - quantity
+                            }
+
+                            localProduct = localProduct.copy(cantidad = newQuantity)
+
                             val movimiento = Movimiento(
                                 loteId = localProduct.id,
                                 tipo = movementType,
@@ -267,8 +278,16 @@ fun StockMovementScreen(
                                 observacion = observation
                             )
 
-                            // Usar función local
-                            handleMovement(movimiento)
+                            viewModel.addMovimiento(movimiento) { success, error ->
+                                if (success) {
+                                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                                        delay(300)
+                                        onMovementAdded()
+                                    }
+                                } else {
+                                    errorMessage = error ?: "Error desconocido al procesar el movimiento"
+                                }
+                            }
                         },
                         enabled = !isLocalLoading,
                         modifier = Modifier.weight(1f),
