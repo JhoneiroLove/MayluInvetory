@@ -9,6 +9,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.jhone.app_inventory.data.Movimiento
 import com.jhone.app_inventory.data.Product
 import com.jhone.app_inventory.data.repository.ProductRepository
@@ -17,11 +18,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
+import java.util.UUID
 
 @HiltViewModel
 class ProductViewModel @Inject constructor(
-    private val productRepository: ProductRepository, // Repository para caché
+    private val productRepository: ProductRepository,
     private val db: FirebaseFirestore,
     private val auth: FirebaseAuth
 ) : ViewModel() {
@@ -44,6 +48,11 @@ class ProductViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
+    // PREVENCIÓN DE DUPLICADOS
+    private val movementMutex = Mutex() // Prevenir múltiples movimientos simultáneos
+    private val pendingMovements = mutableSetOf<String>() // IDs de movimientos en proceso
+    private val processedMovements = mutableSetOf<String>() // IDs de movimientos completados
+
     // CONFIGURACIÓN DE PAGINACIÓN
     private val pageSize = 20L
     private var lastVisibleDoc: DocumentSnapshot? = null
@@ -58,29 +67,24 @@ class ProductViewModel @Inject constructor(
         initializeDataWithCache()
     }
 
-    /**
-     * INICIALIZACIÓN HÍBRIDA (Caché + Firebase)
-     * Carga desde caché inmediatamente, sincroniza en background
-     */
     private fun initializeDataWithCache() {
         viewModelScope.launch {
             try {
                 _isLoading.value = true
                 _error.value = null
 
-                // 1. OBSERVAR CACHÉ LOCAL (Flow continuo, instantáneo)
+                // OBSERVAR CACHÉ LOCAL
                 viewModelScope.launch {
                     productRepository.getProductsFlow().collect { cachedProducts ->
                         _products.value = cachedProducts.sortedBy { it.codigo }
                         Log.d("ProductViewModel", "Productos desde caché: ${cachedProducts.size}")
 
-                        // Actualizar tracking para compatibilidad con paginación existente
                         loadedProductIds.clear()
                         loadedProductIds.addAll(cachedProducts.map { it.id })
                     }
                 }
 
-                // 2. INICIALIZAR CACHÉ SI ES NECESARIO
+                // INICIALIZAR CACHÉ
                 productRepository.initializeCache()
                     .onSuccess {
                         Log.d("ProductViewModel", "Caché inicializado correctamente")
@@ -88,14 +92,12 @@ class ProductViewModel @Inject constructor(
                     .onFailure { error ->
                         Log.e("ProductViewModel", "Error inicializando caché", error)
                         _error.value = "Error cargando datos: ${error.message}"
-                        // 📱 FALLBACK: Si falla caché, usar método original
                         loadFirstPageFallback()
                     }
 
             } catch (e: Exception) {
                 Log.e("ProductViewModel", "Error en inicialización híbrida", e)
                 _error.value = "Error inicializando datos: ${e.message}"
-                // 📱 FALLBACK: Usar método original si falla todo
                 loadFirstPageFallback()
             } finally {
                 _isLoading.value = false
@@ -103,10 +105,6 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Método original como respaldo
-     * Mantiene tu lógica actual si falla el caché
-     */
     private fun loadFirstPageFallback() {
         viewModelScope.launch {
             try {
@@ -149,12 +147,7 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    /**
-     * CARGAR SIGUIENTE PÁGINA (adaptado para híbrido)
-     * Usa caché local si está disponible, Firebase como fallback
-     */
     fun loadNextPage() {
-        // Con caché local, esto es menos crítico, pero mantenemos para compatibilidad
         if (allProductsLoaded || _isLoadingMore.value) {
             Log.d("ProductViewModel", "loadNextPage: No se puede cargar más")
             return
@@ -214,10 +207,6 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    /**
-     * BÚSQUEDA HÍBRIDA (Local primero, luego remota)
-     * 0 lecturas Firebase para búsquedas locales en cache
-     */
     fun searchProductsInServer(query: String, onComplete: (List<Product>) -> Unit) {
         if (query.isBlank()) {
             onComplete(emptyList())
@@ -228,7 +217,6 @@ class ProductViewModel @Inject constructor(
             try {
                 Log.d("ProductViewModel", "Iniciando búsqueda para: '$query'")
 
-                // VERIFICAR CACHÉ LOCAL PRIMERO con ek algoritmo mejorado
                 val localResults = productRepository.searchProductsLocal(query)
                 Log.d("ProductViewModel", "Resultados locales encontrados: ${localResults.size}")
 
@@ -238,12 +226,10 @@ class ProductViewModel @Inject constructor(
                     return@launch
                 }
 
-                // BÚSQUEDA REMOTA EN FIREBASE solo si no hay resultados locales
                 Log.d("ProductViewModel", "No hay resultados locales, buscando en servidor...")
                 val remoteResults = productRepository.searchProductsRemote(query)
                 Log.d("ProductViewModel", "Resultados remotos encontrados: ${remoteResults.size}")
 
-                // Guardar resultados remotos en caché para futuras búsquedas
                 if (remoteResults.isNotEmpty()) {
                     try {
                         remoteResults.forEach { product ->
@@ -264,10 +250,6 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    /**
-     * AGREGAR PRODUCTO (Repository + Firebase)
-     * Actualiza caché automáticamente
-     */
     fun addProduct(product: Product, onComplete: (success: Boolean, error: String?) -> Unit) {
         viewModelScope.launch {
             try {
@@ -276,7 +258,6 @@ class ProductViewModel @Inject constructor(
                 productRepository.addProduct(product)
                     .onSuccess { newProduct ->
                         Log.d("ProductViewModel", "Producto agregado exitosamente: ${newProduct.id}")
-                        // El caché se actualiza automáticamente vía Flow
                         onComplete(true, null)
                     }
                     .onFailure { error ->
@@ -293,10 +274,6 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    /**
-     * ACTUALIZAR PRODUCTO (Repository + Firebase)
-     * Actualiza caché automáticamente
-     */
     fun updateProduct(product: Product, onComplete: (success: Boolean, error: String?) -> Unit) {
         viewModelScope.launch {
             try {
@@ -305,7 +282,6 @@ class ProductViewModel @Inject constructor(
                 productRepository.updateProduct(product)
                     .onSuccess {
                         Log.d("ProductViewModel", "Producto actualizado exitosamente: ${product.id}")
-                        // El caché se actualiza automáticamente vía Flow
                         onComplete(true, null)
                     }
                     .onFailure { error ->
@@ -322,16 +298,11 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    /**
-     * ELIMINAR PRODUCTO (Repository + Firebase)
-     * Limpia caché automáticamente
-     */
     fun deleteProduct(product: Product, onComplete: (success: Boolean, error: String?) -> Unit) {
         viewModelScope.launch {
             try {
                 _isLoading.value = true
 
-                // Eliminar movimientos relacionados primero
                 try {
                     val movimientosSnapshot = db.collection("movimientos")
                         .whereEqualTo("loteId", product.id)
@@ -350,7 +321,6 @@ class ProductViewModel @Inject constructor(
                 productRepository.deleteProduct(product.id)
                     .onSuccess {
                         Log.d("ProductViewModel", "Producto eliminado exitosamente: ${product.id}")
-                        // El caché se actualiza automáticamente vía Flow
                         onComplete(true, null)
                     }
                     .onFailure { error ->
@@ -367,7 +337,6 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    // Funcion limpiar listeners específicamente
     fun clearMovimientosListener() {
         try {
             movimientosListener?.remove()
@@ -380,78 +349,138 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    // Movimiento con mejor manejo de estados
+    /**
+     * FUNCIÓN CRÍTICA CORREGIDA: addMovimiento
+     * Previene duplicados usando Mutex y IDs únicos
+     */
     fun addMovimiento(movimiento: Movimiento, onComplete: (success: Boolean, error: String?) -> Unit) {
         viewModelScope.launch {
-            try {
-                val currentUserEmail = auth.currentUser?.email ?: "UsuarioDesconocido"
-                val productRef = db.collection("products").document(movimiento.loteId)
-                val movimientoRef = db.collection("movimientos").document()
+            movementMutex.withLock {
+                try {
+                    // Generar ID único para el movimiento
+                    val movementId = UUID.randomUUID().toString()
 
-                val movimientoData = mapOf(
-                    "loteId" to movimiento.loteId,
-                    "tipo" to movimiento.tipo,
-                    "cantidad" to movimiento.cantidad,
-                    "fecha" to movimiento.fecha, // Timestamp se maneja automáticamente
-                    "usuario" to currentUserEmail,
-                    "observacion" to movimiento.observacion
-                )
-
-                // Usar runTransaction de forma más eficiente
-                val result = db.runTransaction { transaction ->
-                    val productSnapshot = transaction.get(productRef)
-                    if (!productSnapshot.exists()) {
-                        throw Exception("El producto no existe")
+                    // Verificar si ya está en proceso
+                    if (pendingMovements.contains(movementId) || processedMovements.contains(movementId)) {
+                        Log.w("ProductViewModel", "Movimiento duplicado detectado y bloqueado: $movementId")
+                        onComplete(false, "Operación duplicada bloqueada")
+                        return@withLock
                     }
 
-                    val currentQuantity = productSnapshot.getLong("cantidad") ?: 0L
-                    val newQuantity = if (movimiento.tipo == "ingreso") {
-                        currentQuantity + movimiento.cantidad
-                    } else {
-                        currentQuantity - movimiento.cantidad
+                    // Marcar como pendiente
+                    pendingMovements.add(movementId)
+                    Log.d("ProductViewModel", "Iniciando movimiento único: $movementId")
+
+                    val currentUserEmail = auth.currentUser?.email ?: "UsuarioDesconocido"
+                    val productRef = db.collection("products").document(movimiento.loteId)
+                    val movimientoRef = db.collection("movimientos").document(movementId)
+
+                    val movimientoData = mapOf(
+                        "id" to movementId, // Agregar ID explícito
+                        "loteId" to movimiento.loteId,
+                        "tipo" to movimiento.tipo,
+                        "cantidad" to movimiento.cantidad,
+                        "fecha" to Timestamp.now(), // Usar timestamp del servidor
+                        "usuario" to currentUserEmail,
+                        "observacion" to movimiento.observacion,
+                        "timestamp" to com.google.firebase.firestore.FieldValue.serverTimestamp() // Para ordenamiento
+                    )
+
+                    // TRANSACCIÓN ATÓMICA MEJORADA
+                    val newQuantity = db.runTransaction { transaction ->
+                        // 1. Leer estado actual del producto
+                        val productSnapshot = transaction.get(productRef)
+                        if (!productSnapshot.exists()) {
+                            throw Exception("El producto no existe")
+                        }
+
+                        // 2. Verificar si el movimiento ya existe (prevención adicional)
+                        val existingMovement = transaction.get(movimientoRef)
+                        if (existingMovement.exists()) {
+                            throw Exception("El movimiento ya existe en la base de datos")
+                        }
+
+                        val currentQuantity = productSnapshot.getLong("cantidad") ?: 0L
+
+                        // 3. Calcular nueva cantidad
+                        val calculatedQuantity = if (movimiento.tipo == "ingreso") {
+                            currentQuantity + movimiento.cantidad
+                        } else {
+                            currentQuantity - movimiento.cantidad
+                        }
+
+                        // 4. Validaciones de negocio
+                        if (calculatedQuantity < 0) {
+                            throw Exception("Stock insuficiente. Stock actual: $currentQuantity, intentando ${movimiento.tipo}: ${movimiento.cantidad}")
+                        }
+
+                        // 5. Actualizar producto con nueva cantidad
+                        transaction.update(productRef, mapOf(
+                            "cantidad" to calculatedQuantity,
+                            "lastUpdated" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+                        ))
+
+                        // 6. Crear registro de movimiento
+                        transaction.set(movimientoRef, movimientoData)
+
+                        Log.d("ProductViewModel", "Transacción exitosa: $currentQuantity -> $calculatedQuantity")
+                        calculatedQuantity.toInt()
+                    }.await()
+
+                    // 7. Actualizar caché local DESPUÉS de confirmar transacción
+                    try {
+                        productRepository.updateProductQuantity(movimiento.loteId, newQuantity)
+                        Log.d("ProductViewModel", "Caché local actualizado: nueva cantidad $newQuantity")
+                    } catch (e: Exception) {
+                        Log.e("ProductViewModel", "Error actualizando caché local", e)
+                        // No fallar por error de caché
                     }
 
-                    if (newQuantity < 0) {
-                        throw Exception("No hay stock suficiente para realizar la salida.")
+                    // 8. Marcar como completado
+                    pendingMovements.remove(movementId)
+                    processedMovements.add(movementId)
+
+                    // 9. Limpiar historial de procesados periódicamente
+                    if (processedMovements.size > 100) {
+                        val toRemove = processedMovements.take(50)
+                        processedMovements.removeAll(toRemove.toSet())
                     }
 
-                    // Actualizar producto
-                    transaction.update(productRef, "cantidad", newQuantity)
+                    Log.d("ProductViewModel", "Movimiento completado exitosamente: $movementId -> Nueva cantidad: $newQuantity")
+                    onComplete(true, null)
 
-                    // Crear movimiento usando el Map de datos
-                    transaction.set(movimientoRef, movimientoData)
+                } catch (e: Exception) {
+                    // Limpiar estado en caso de error
+                    pendingMovements.clear()
 
-                    // Retornar nueva cantidad para actualización local
-                    newQuantity.toInt()
-                }.await()
-
-                // Actualizar caché local inmediatamente
-                productRepository.updateProductQuantity(movimiento.loteId, result)
-
-                Log.d("ProductViewModel", "Movimiento agregado exitosamente, nueva cantidad: $result")
-                onComplete(true, null)
-
-            } catch (e: Exception) {
-                Log.e("ProductViewModel", "Error en la transacción de movimiento", e)
-                onComplete(false, e.message)
+                    when (e) {
+                        is FirebaseFirestoreException -> {
+                            Log.e("ProductViewModel", "Error de Firestore en movimiento", e)
+                            onComplete(false, "Error de conectividad: ${e.message}")
+                        }
+                        else -> {
+                            Log.e("ProductViewModel", "Error en transacción de movimiento", e)
+                            onComplete(false, e.message ?: "Error desconocido")
+                        }
+                    }
+                }
             }
         }
     }
 
-    /**
-     * REFRESCAR DATOS (Fuerza sincronización completa)
-     * Usa Repository para sincronización optimizada
-     */
     fun refreshData() {
         viewModelScope.launch {
             try {
                 _isLoading.value = true
                 clearMovimientosListener()
 
+                // Limpiar estados de duplicados
+                pendingMovements.clear()
+                processedMovements.clear()
+
                 productRepository.forceSync()
                     .onSuccess {
                         Log.d("ProductViewModel", "Sincronización forzada exitosa")
-                        // Reset estado de paginación
                         lastVisibleDoc = null
                         allProductsLoaded = false
                         loadedProductIds.clear()
@@ -470,25 +499,18 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    /**
-     * SINCRONIZAR (Alias de refresh)
-     */
     fun syncData() {
         refreshData()
     }
 
     fun listenToMovimientosForProduct(productId: String) {
         try {
-            // Si ya estamos escuchando el mismo producto, no hacer nada
             if (currentProductId == productId && movimientosListener != null) {
                 Log.d("ProductViewModel", "Ya existe listener para producto: $productId")
                 return
             }
 
-            // Limpiar listener anterior si existe
             clearMovimientosListener()
-
-            // Establecer nuevo listener
             currentProductId = productId
 
             Log.d("ProductViewModel", "Configurando listener para producto: $productId")
@@ -518,7 +540,8 @@ class ProductViewModel @Inject constructor(
                                     Log.d("ProductViewModel", "Procesando documento: ${doc.id}")
                                     Log.d("ProductViewModel", "Datos del documento: ${doc.data}")
 
-                                    Movimiento(
+                                    // Crear el movimiento con todos los campos
+                                    val movimiento = Movimiento(
                                         id = doc.id,
                                         loteId = doc.getString("loteId") ?: "",
                                         tipo = doc.getString("tipo") ?: "",
@@ -527,14 +550,27 @@ class ProductViewModel @Inject constructor(
                                         usuario = doc.getString("usuario") ?: "",
                                         observacion = doc.getString("observacion") ?: ""
                                     )
+
+                                    Log.d("ProductViewModel", "Movimiento parseado: ID=${movimiento.id}, Tipo=${movimiento.tipo}, Cantidad=${movimiento.cantidad}, Usuario=${movimiento.usuario}")
+                                    movimiento
+
                                 } catch (e: Exception) {
                                     Log.e("ProductViewModel", "Error al parsear movimiento ${doc.id}", e)
                                     null
                                 }
                             }
 
-                            Log.d("ProductViewModel", "Movimientos parseados: ${movimientosList.size}")
-                            _movimientos.value = movimientosList
+                            // Eliminar duplicados por ID y ordenar por fecha
+                            val uniqueMovimientos = movimientosList
+                                .distinctBy { it.id }
+                                .sortedByDescending { it.fecha.seconds }
+
+                            Log.d("ProductViewModel", "Movimientos únicos procesados: ${uniqueMovimientos.size}")
+                            uniqueMovimientos.forEachIndexed { index, mov ->
+                                Log.d("ProductViewModel", "Movimiento $index: ${mov.tipo} - ${mov.cantidad} - ${mov.usuario}")
+                            }
+
+                            _movimientos.value = uniqueMovimientos
 
                         } else {
                             Log.d("ProductViewModel", "Snapshot es null")
@@ -553,8 +589,6 @@ class ProductViewModel @Inject constructor(
             _movimientos.value = emptyList()
         }
     }
-
-    // FUNCIONES DE UTILIDAD
 
     private fun parseProductFromDocument(doc: DocumentSnapshot): Product? {
         return try {
@@ -599,29 +633,33 @@ class ProductViewModel @Inject constructor(
         }
     }
 
-    // LIMPIAR RECURSOS
     fun clearError() {
         _error.value = null
     }
 
-    // Funcion resetear estados para evitar states obsoletos
     fun resetStates() {
         try {
             _isLoading.value = false
             _isLoadingMore.value = false
             _error.value = null
             clearMovimientosListener()
+
+            // Limpiar estados de duplicados
+            pendingMovements.clear()
+            processedMovements.clear()
+
             Log.d("ProductViewModel", "Estados reseteados")
         } catch (e: Exception) {
             Log.e("ProductViewModel", "Error al resetear estados", e)
         }
     }
 
-    // Limpiar todos los recursos al destruir el ViewModel
     override fun onCleared() {
         super.onCleared()
         try {
             clearMovimientosListener()
+            pendingMovements.clear()
+            processedMovements.clear()
             Log.d("ProductViewModel", "ViewModel limpiado correctamente")
         } catch (e: Exception) {
             Log.e("ProductViewModel", "Error al limpiar ViewModel", e)

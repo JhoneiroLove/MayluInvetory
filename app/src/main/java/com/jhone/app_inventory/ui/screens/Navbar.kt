@@ -1,14 +1,14 @@
 package com.jhone.app_inventory.ui.screens
 
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.stringResource
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Refresh
-import com.jhone.app_inventory.R
+import androidx.compose.material.icons.filled.Settings
+import com.jhone.app_inventory.ui.components.SyncDiagnosticDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -18,6 +18,7 @@ fun InventoryNavbar(
     onLogoutClick: () -> Unit,
     userRole: String = "asesor"
 ) {
+    var showDiagnostic by remember { mutableStateOf(false) }
     val isAdmin = (userRole == "admin")
 
     TopAppBar(
@@ -51,6 +52,17 @@ fun InventoryNavbar(
                 )
             }
 
+            // DIAGNÓSTICO - Solo admin puede ver
+            if (isAdmin) {
+                IconButton(onClick = { showDiagnostic = true }) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Diagnóstico de Sincronización",
+                        tint = Color.White
+                    )
+                }
+            }
+
             // CERRAR SESIÓN - Todos pueden
             IconButton(onClick = onLogoutClick) {
                 Icon(
@@ -61,4 +73,11 @@ fun InventoryNavbar(
             }
         }
     )
+
+    // Mostrar diálogo de diagnóstico
+    if (showDiagnostic) {
+        SyncDiagnosticDialog(
+            onDismiss = { showDiagnostic = false }
+        )
+    }
 }
