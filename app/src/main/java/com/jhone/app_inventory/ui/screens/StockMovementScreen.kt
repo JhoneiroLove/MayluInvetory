@@ -57,11 +57,17 @@ fun StockMovementScreen(
     val fieldColors = TextFieldDefaults.colors(
         focusedContainerColor = Color.Transparent,
         unfocusedContainerColor = Color.Transparent,
+        disabledContainerColor = Color.Transparent, // Mantener transparente cuando está deshabilitado
         focusedTextColor = Color.Black,
         unfocusedTextColor = Color.Black,
-        focusedIndicatorColor = Color.Black,
+        disabledTextColor = Color.Gray, // Texto gris cuando está deshabilitado, no negro
+        focusedIndicatorColor = Color(0xFF7851A9), // Color morado de la app
         unfocusedIndicatorColor = Color.Gray,
-        cursorColor = Color.Black
+        disabledIndicatorColor = Color.LightGray, // Borde gris claro cuando está deshabilitado
+        cursorColor = Color(0xFF7851A9), // Cursor morado
+        focusedLabelColor = Color(0xFF7851A9), // Label morado cuando tiene foco
+        unfocusedLabelColor = Color.Black,
+        disabledLabelColor = Color.Gray // Label gris cuando está deshabilitado
     )
 
     // Estados del formulario
@@ -150,14 +156,14 @@ fun StockMovementScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
-                        containerColor = Color(0xFFE8F5E8)
+                        containerColor = Color(0xFFF8F6FF) // Fondo morado muy claro de la app
                     ),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text(
                         text = "Stock actual: ${updatedProduct.cantidad}",
                         style = MaterialTheme.typography.bodyLarge.copy(
-                            color = Color(0xFF2E7D32),
+                            color = Color(0xFF7851A9), // Color morado de la app
                             fontWeight = FontWeight.Bold
                         ),
                         textAlign = TextAlign.Center,
@@ -378,44 +384,6 @@ fun StockMovementScreen(
                             Text(
                                 text = if (hasMovementBeenProcessed) "Procesando..." else "Guardar",
                                 color = Color.White
-                            )
-                        }
-                    }
-                }
-
-                // Información adicional de ayuda
-                if (!isLocalLoading && !hasMovementBeenProcessed) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFFF3E5F5)
-                        )
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = "💡 Información:",
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontWeight = FontWeight.Bold
-                                ),
-                                color = Color(0xFF7B1FA2)
-                            )
-                            Text(
-                                text = "• Ingreso: Suma al stock actual",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFF7B1FA2)
-                            )
-                            Text(
-                                text = "• Salida: Resta del stock actual",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFF7B1FA2)
-                            )
-                            Text(
-                                text = "• Los cambios se sincronizan automáticamente",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFF7B1FA2)
                             )
                         }
                     }
