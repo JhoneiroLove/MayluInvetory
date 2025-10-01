@@ -1,5 +1,6 @@
 package com.jhone.app_inventory.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,6 +31,21 @@ fun StockMovementScreen(
     onMovementAdded: () -> Unit,
     viewModel: ProductViewModel = hiltViewModel()
 ) {
+    // 🔥 ACTIVAR LISTENER EN TIEMPO REAL PARA ESTE PRODUCTO
+    LaunchedEffect(product.id) {
+        Log.d("StockMovementScreen", "🔄 Activando listener para producto: ${product.id}")
+        viewModel.listenToProductUpdates(product.id)
+    }
+
+    // 🧹 LIMPIAR LISTENERS AL SALIR
+    DisposableEffect(product.id) {
+        onDispose {
+            Log.d("StockMovementScreen", "🧹 Limpiando listeners para producto: ${product.id}")
+            viewModel.clearProductListener(product.id)
+            viewModel.clearMovimientosListener()
+        }
+    }
+
     // ESTADO LOCAL SIN ACTUALIZACIONES OPTIMISTAS
     var isLocalLoading by remember { mutableStateOf(false) }
     var hasMovementBeenProcessed by remember { mutableStateOf(false) }
@@ -37,17 +53,10 @@ fun StockMovementScreen(
     // Usar el producto original sin modificaciones locales
     val currentProduct = remember(product) { product }
 
-    // Observar productos actualizados del ViewModel para mostrar stock real
+    // 🔥 OBSERVAR PRODUCTOS ACTUALIZADOS DEL VIEWMODEL PARA MOSTRAR STOCK REAL
     val products by viewModel.products.collectAsState()
     val updatedProduct = remember(products, currentProduct.id) {
         products.find { it.id == currentProduct.id } ?: currentProduct
-    }
-
-    // Limpiar listeners al salir de la pantalla
-    DisposableEffect(Unit) {
-        onDispose {
-            viewModel.clearMovimientosListener()
-        }
     }
 
     val primaryColor = Color(0xFF9C84C9)
@@ -76,12 +85,14 @@ fun StockMovementScreen(
     var observation by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    // Función para manejar movimiento SIN actualizaciones optimistas
+    // 🔥 FUNCIÓN PARA MANEJAR MOVIMIENTO CON LOGGING DETALLADO
     val handleMovement = { quantity: Int ->
         if (!hasMovementBeenProcessed) {
             isLocalLoading = true
             errorMessage = null
             hasMovementBeenProcessed = true
+
+            Log.d("StockMovementScreen", "🚀 INICIANDO MOVIMIENTO: Producto=${updatedProduct.codigo}, Tipo=$movementType, Cantidad=$quantity, Stock Actual=${updatedProduct.cantidad}")
 
             val movimiento = Movimiento(
                 loteId = currentProduct.id,
@@ -96,12 +107,14 @@ fun StockMovementScreen(
                 isLocalLoading = false
 
                 if (success) {
+                    Log.d("StockMovementScreen", "✅ MOVIMIENTO EXITOSO: Cerrando pantalla")
                     // Solo cerrar la pantalla si fue exitoso
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
                         delay(500) // Dar tiempo para que se actualice la base de datos
                         onMovementAdded()
                     }
                 } else {
+                    Log.e("StockMovementScreen", "❌ ERROR EN MOVIMIENTO: $error")
                     // Resetear estado para permitir reintento
                     hasMovementBeenProcessed = false
                     errorMessage = error ?: "Error desconocido al procesar el movimiento"
@@ -152,7 +165,7 @@ fun StockMovementScreen(
                     textAlign = TextAlign.Center
                 )
 
-                // Mostrar stock actual REAL (sin optimizaciones)
+                // 🔥 MOSTRAR STOCK ACTUAL REAL (SIN OPTIMIZACIONES) + LOGGING
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -171,6 +184,36 @@ fun StockMovementScreen(
                             .fillMaxWidth()
                             .padding(16.dp)
                     )
+                }
+
+                // 🔍 DEBUG: Mostrar info adicional en desarrollo
+                if (updatedProduct.id != currentProduct.id || updatedProduct.cantidad != currentProduct.cantidad) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFE3F2FD)
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(8.dp)
+                        ) {
+                            Text(
+                                text = "🔍 DEBUG INFO:",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF1976D2)
+                            )
+                            Text(
+                                text = "Original: ${currentProduct.cantidad}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF1976D2)
+                            )
+                            Text(
+                                text = "Actualizado: ${updatedProduct.cantidad}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF1976D2)
+                            )
+                        }
+                    }
                 }
 
                 // Indicador de estado de carga
@@ -241,6 +284,7 @@ fun StockMovementScreen(
                             if (!isLocalLoading && !hasMovementBeenProcessed) {
                                 movementType = "ingreso"
                                 errorMessage = null
+                                Log.d("StockMovementScreen", "🔄 Tipo cambiado a: $movementType")
                             }
                         },
                         enabled = !isLocalLoading && !hasMovementBeenProcessed,
@@ -256,6 +300,7 @@ fun StockMovementScreen(
                             if (!isLocalLoading && !hasMovementBeenProcessed) {
                                 movementType = "salida"
                                 errorMessage = null
+                                Log.d("StockMovementScreen", "🔄 Tipo cambiado a: $movementType")
                             }
                         },
                         enabled = !isLocalLoading && !hasMovementBeenProcessed,
@@ -274,6 +319,7 @@ fun StockMovementScreen(
                         if (!isLocalLoading && !hasMovementBeenProcessed) {
                             quantityText = newValue
                             errorMessage = null
+                            Log.d("StockMovementScreen", "📝 Cantidad cambiada a: $newValue")
                         }
                     },
                     label = { Text("Cantidad", color = Color.Black) },
@@ -291,6 +337,7 @@ fun StockMovementScreen(
                     onValueChange = {
                         if (!isLocalLoading && !hasMovementBeenProcessed) {
                             observation = it
+                            Log.d("StockMovementScreen", "📝 Observación cambiada")
                         }
                     },
                     label = { Text("Observaciones", color = Color.Black) },
@@ -332,6 +379,7 @@ fun StockMovementScreen(
                     OutlinedButton(
                         onClick = {
                             if (!isLocalLoading) {
+                                Log.d("StockMovementScreen", "❌ Cancelando operación")
                                 onCancel()
                             }
                         },
@@ -347,6 +395,8 @@ fun StockMovementScreen(
                         onClick = {
                             val quantity = quantityText.toIntOrNull()
 
+                            Log.d("StockMovementScreen", "🔍 VALIDANDO: quantity=$quantity, movementType=$movementType, stock=${updatedProduct.cantidad}")
+
                             // Validaciones mejoradas
                             val validationError = when {
                                 hasMovementBeenProcessed -> "Movimiento ya procesado"
@@ -358,8 +408,10 @@ fun StockMovementScreen(
                             }
 
                             if (validationError != null) {
+                                Log.w("StockMovementScreen", "⚠️ VALIDACIÓN FALLIDA: $validationError")
                                 errorMessage = validationError
                             } else {
+                                Log.d("StockMovementScreen", "✅ VALIDACIÓN EXITOSA: Procesando movimiento")
                                 // Procesar movimiento
                                 handleMovement(quantity!!)
                             }

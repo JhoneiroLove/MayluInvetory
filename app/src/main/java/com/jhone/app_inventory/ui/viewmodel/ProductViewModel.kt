@@ -63,6 +63,9 @@ class ProductViewModel @Inject constructor(
     private var movimientosListener: ListenerRegistration? = null
     private var currentProductId: String? = null
 
+    // NUEVOS LISTENERS PARA PRODUCTOS EN TIEMPO REAL
+    private var productListeners = mutableMapOf<String, ListenerRegistration>()
+
     init {
         initializeDataWithCache()
     }
@@ -350,8 +353,8 @@ class ProductViewModel @Inject constructor(
     }
 
     /**
-     * FUNCIÓN CRÍTICA CORREGIDA: addMovimiento
-     * Previene duplicados usando Mutex y IDs únicos
+     * addMovimiento
+     * Previene duplicados usando Mutex y IDs únicos + ACTUALIZACIÓN INMEDIATA
      */
     fun addMovimiento(movimiento: Movimiento, onComplete: (success: Boolean, error: String?) -> Unit) {
         viewModelScope.launch {
@@ -376,25 +379,25 @@ class ProductViewModel @Inject constructor(
                     val movimientoRef = db.collection("movimientos").document(movementId)
 
                     val movimientoData = mapOf(
-                        "id" to movementId, // Agregar ID explícito
+                        "id" to movementId,
                         "loteId" to movimiento.loteId,
                         "tipo" to movimiento.tipo,
                         "cantidad" to movimiento.cantidad,
-                        "fecha" to Timestamp.now(), // Usar timestamp del servidor
+                        "fecha" to Timestamp.now(),
                         "usuario" to currentUserEmail,
                         "observacion" to movimiento.observacion,
-                        "timestamp" to com.google.firebase.firestore.FieldValue.serverTimestamp() // Para ordenamiento
+                        "timestamp" to com.google.firebase.firestore.FieldValue.serverTimestamp()
                     )
 
-                    // TRANSACCIÓN ATÓMICA MEJORADA
-                    val newQuantity = db.runTransaction { transaction ->
+                    // TRANSACCIÓN ATÓMICA MEJORADA CON ACTUALIZACIÓN INMEDIATA
+                    val result = db.runTransaction { transaction ->
                         // 1. Leer estado actual del producto
                         val productSnapshot = transaction.get(productRef)
                         if (!productSnapshot.exists()) {
                             throw Exception("El producto no existe")
                         }
 
-                        // 2. Verificar si el movimiento ya existe (prevención adicional)
+                        // 2. Verificar si el movimiento ya existe
                         val existingMovement = transaction.get(movimientoRef)
                         if (existingMovement.exists()) {
                             throw Exception("El movimiento ya existe en la base de datos")
@@ -424,29 +427,42 @@ class ProductViewModel @Inject constructor(
                         transaction.set(movimientoRef, movimientoData)
 
                         Log.d("ProductViewModel", "Transacción exitosa: $currentQuantity -> $calculatedQuantity")
-                        calculatedQuantity.toInt()
+
+                        // 7. RETORNAR DATOS PARA ACTUALIZACIÓN INMEDIATA
+                        Triple(
+                            calculatedQuantity.toInt(),
+                            parseProductFromDocument(productSnapshot)?.copy(cantidad = calculatedQuantity.toInt()),
+                            currentQuantity.toInt()
+                        )
                     }.await()
 
-                    // 7. Actualizar caché local DESPUÉS de confirmar transacción
+                    val (newQuantity, updatedProduct, oldQuantity) = result
+
+                    // 8. 🔥 ACTUALIZACIÓN INMEDIATA DEL PRODUCTO EN LA LISTA
+                    updatedProduct?.let { product ->
+                        updateProductInList(product)
+                        Log.d("ProductViewModel", "PRODUCTO ACTUALIZADO INMEDIATAMENTE: ${product.codigo} - Stock: $oldQuantity → $newQuantity")
+                    }
+
+                    // 9. Actualizar caché local
                     try {
                         productRepository.updateProductQuantity(movimiento.loteId, newQuantity)
                         Log.d("ProductViewModel", "Caché local actualizado: nueva cantidad $newQuantity")
                     } catch (e: Exception) {
                         Log.e("ProductViewModel", "Error actualizando caché local", e)
-                        // No fallar por error de caché
                     }
 
-                    // 8. Marcar como completado
+                    // 10. Marcar como completado
                     pendingMovements.remove(movementId)
                     processedMovements.add(movementId)
 
-                    // 9. Limpiar historial de procesados periódicamente
+                    // 11. Limpiar historial de procesados periódicamente
                     if (processedMovements.size > 100) {
                         val toRemove = processedMovements.take(50)
                         processedMovements.removeAll(toRemove.toSet())
                     }
 
-                    Log.d("ProductViewModel", "Movimiento completado exitosamente: $movementId -> Nueva cantidad: $newQuantity")
+                    Log.d("ProductViewModel", "MOVIMIENTO COMPLETADO: $movementId - Stock actualizado: $oldQuantity → $newQuantity")
                     onComplete(true, null)
 
                 } catch (e: Exception) {
@@ -590,6 +606,60 @@ class ProductViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Escuchar cambios de un producto específico en tiempo real
+     */
+    fun listenToProductUpdates(productId: String) {
+        try {
+            // Limpiar listener anterior si existe
+            productListeners[productId]?.remove()
+
+            Log.d("ProductViewModel", "Configurando listener para producto: $productId")
+
+            val listener = db.collection("products")
+                .document(productId)
+                .addSnapshotListener { snapshot, e ->
+                    if (e != null) {
+                        Log.e("ProductViewModel", "Error en listener de producto", e)
+                        return@addSnapshotListener
+                    }
+
+                    if (snapshot != null && snapshot.exists()) {
+                        val updatedProduct = parseProductFromDocument(snapshot)
+                        if (updatedProduct != null) {
+                            Log.d("ProductViewModel", "PRODUCTO ACTUALIZADO DESDE SERVIDOR: ${updatedProduct.codigo} - Stock: ${updatedProduct.cantidad}")
+                            updateProductInList(updatedProduct)
+                        }
+                    }
+                }
+
+            productListeners[productId] = listener
+
+        } catch (e: Exception) {
+            Log.e("ProductViewModel", "Error configurando listener de producto", e)
+        }
+    }
+
+    /**
+     * Limpiar listeners de productos específicos
+     */
+    fun clearProductListener(productId: String) {
+        productListeners[productId]?.let { listener ->
+            listener.remove()
+            productListeners.remove(productId)
+            Log.d("ProductViewModel", "Listener de producto limpiado: $productId")
+        }
+    }
+
+    /**
+     * 🧹 Limpiar todos los listeners de productos
+     */
+    fun clearAllProductListeners() {
+        productListeners.values.forEach { it.remove() }
+        productListeners.clear()
+        Log.d("ProductViewModel", "Todos los listeners de productos limpiados")
+    }
+
     private fun parseProductFromDocument(doc: DocumentSnapshot): Product? {
         return try {
             Product(
@@ -612,6 +682,9 @@ class ProductViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Actualizar producto en la lista con forzado de UI
+     */
     private fun updateProductInList(updatedProduct: Product) {
         val currentList = _products.value.toMutableList()
         val index = currentList.indexOfFirst { it.id == updatedProduct.id }
@@ -619,7 +692,19 @@ class ProductViewModel @Inject constructor(
         if (index != -1) {
             currentList[index] = updatedProduct
             _products.value = currentList.sortedBy { it.codigo }
-            Log.d("ProductViewModel", "Producto actualizado en lista: ${updatedProduct.codigo}")
+            Log.d("ProductViewModel", "PRODUCTO ACTUALIZADO EN LISTA: ${updatedProduct.codigo} - Cantidad: ${updatedProduct.cantidad}")
+
+            // FORZAR ACTUALIZACIÓN INMEDIATA DEL UI
+            viewModelScope.launch {
+                // Pequeña pausa para asegurar que el UI se actualice
+                kotlinx.coroutines.delay(100)
+                _products.value = _products.value // Trigger recomposition
+            }
+        } else {
+            // Si no existe en la lista, agregarlo
+            currentList.add(updatedProduct)
+            _products.value = currentList.sortedBy { it.codigo }
+            Log.d("ProductViewModel", "PRODUCTO AGREGADO A LISTA: ${updatedProduct.codigo} - Cantidad: ${updatedProduct.cantidad}")
         }
     }
 
@@ -658,6 +743,7 @@ class ProductViewModel @Inject constructor(
         super.onCleared()
         try {
             clearMovimientosListener()
+            clearAllProductListeners() // NUEVA LÍNEA PARA LIMPIAR LISTENERS DE PRODUCTOS
             pendingMovements.clear()
             processedMovements.clear()
             Log.d("ProductViewModel", "ViewModel limpiado correctamente")
